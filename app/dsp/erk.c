@@ -744,6 +744,9 @@ void erk_set_room(int type, int size_q15, int amount_q15)
     st.rev_mix = clampi(amount_q15, 0, 32767);
 }
 
+/* the pitch wheel: every string's rate times the ratio (Q16, 2^(semitones / 12)), the release noises left alone */
+static volatile int32_t bend_q16 = 65536;
+void erk_bend(int ratio_q16) { bend_q16 = clampi(ratio_q16, 49152, 87381); }   /* (a fourth either way at most) */
 void erk_set_width(int width_q15) { st.width = clampi(width_q15, 0, 32767); }
 void erk_set_resonance(int level_q15) { st.res_level = clampi(level_q15, 0, 32767); }
 void erk_set_rel_level(int level_q15) { st.rel_level = clampi(level_q15, 0, 32767); }
@@ -779,6 +782,7 @@ void erk_init(const erk_bank *b, const erk_cfg *c)
     cfg = *c;
     memset(vc, 0, sizeof vc);
     memset(res_buf, 0, sizeof res_buf);
+    bend_q16 = 65536;
     for (i = 0; i < NRES; i++) {
         res_c[i].ln = p;
         res_c[i].len = res_len[i];
@@ -820,7 +824,7 @@ static uint16_t lvl_acc[ERK_KEYS];
 static void voice_block(voice *v, int32_t *L, int32_t *R)
 {
     int32_t buf[ERK_BLOCK], g, tl, tr;
-    uint32_t env;
+    uint32_t env, inc;
     int i;
     /* the envelope at the block's end */
     env = mulq30(v->env, v->m);
@@ -863,13 +867,19 @@ static void voice_block(voice *v, int32_t *L, int32_t *R)
         v->st[1].wt = muls(muls(v->w1s, (int32_t)(v->senv >> 15), 15), gs, 15);
     }
 #endif
+    inc = v->inc;
+    if (bend_q16 != 65536 && v->state != V_NOISE) {
+        inc = (inc * (uint32_t)(bend_q16 >> 2)) >> 14;
+        if (inc > 0xFFFFu)
+            inc = 0xFFFFu;                            /* stream_run: at most one source sample an output sample */
+    }
     if (v->nst) {
-        stream_run(&v->st[0], v->inc, buf, 0);
+        stream_run(&v->st[0], inc, buf, 0);
         erk_st.stream_blocks++;
     } else
         memset(buf, 0, sizeof buf);
     for (i = 1; i < v->nst; i++) {
-        stream_run(&v->st[i], v->inc, buf, 1);
+        stream_run(&v->st[i], inc, buf, 1);
         erk_st.stream_blocks++;
     }
 #if ERK_MODAL

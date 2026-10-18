@@ -255,6 +255,43 @@ int main(int argc, char **argv)
         check(bright(buf, S(0.02), S(0.35)) > br[ERK_CONCERT], "more brilliance: brighter");
     }
 
+    /* the pitch wheel: at rest nothing changes; two semitones up is the key two up; every key has the headroom */
+    {
+        static int32_t ref[2 * 44100];
+        int zc[2], j, maxinc = 0;
+        for (i = 0; i < ERK_KEYS; i++)
+            maxinc = bank.key[i].inc > maxinc ? bank.key[i].inc : maxinc;
+        printf("  the highest rate: %.3f source samples an output sample, %.3f bent two semitones up\n",
+               maxinc / 65536.0, maxinc * 1.12246 / 65536.0);
+        check(maxinc * 1.12246 < 65535.0, "two semitones up stay within one source sample an output sample");
+        fresh(ERK_REV_OFF);
+        erk_note_on(60, 90);
+        render(ref, S(0.5));
+        fresh(ERK_REV_OFF);
+        erk_bend(65536);
+        erk_note_on(60, 90);
+        render(buf, S(0.5));
+        check(!memcmp(ref, buf, sizeof(int32_t) * 2 * S(0.5)), "the wheel at rest: the same samples");
+        for (j = 0; j < 2; j++) {               /* A3 bent up two semitones against B3: zero crossings, smoothed */
+            double m = 0, prev = 0;
+            int k;
+            fresh(ERK_REV_OFF);
+            erk_bend(j ? 65536 : 73562);        /* 2^(2/12) */
+            erk_note_on(j ? 59 : 57, 90);
+            render(buf, S(0.6));
+            zc[j] = 0;
+            for (k = S(0.1); k < S(0.6); k++) {
+                m += (buf[2 * k] - m) * 0.08;   /* a gentle low-pass: the fundamental */
+                if (k > S(0.1) && (m >= 0) != (prev >= 0))
+                    zc[j]++;
+                prev = m;
+            }
+        }
+        printf("  A3 bent +2: %d zero crossings, B3: %d\n", zc[0], zc[1]);
+        check(zc[1] > 0 && fabs(zc[0] - zc[1]) <= 0.03 * zc[1], "A3 bent two semitones up sounds as B3");
+        erk_bend(65536);
+    }
+
     /* many notes: the voices are capped, the stealing is click-free, nothing clips */
     fresh(ERK_REV_HALL);
     erk_sustain(127);

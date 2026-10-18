@@ -814,7 +814,9 @@ def main():
         if not re.fullmatch(r"\d+", digits):
             raise SystemExit(f"fm1.toml smk_id_prefix {digits!r}: digits only")
         prefix = MODELS[MODEL] + "_" + digits
-    PRODUCT = prefix + "00"
+    PRODUCT = prefix + str(CONF.get("id_suffix", "00"))   # fm1.toml id_suffix: the dev build's last digits
+    if not re.fullmatch(r"\d*", str(CONF.get("id_suffix", "00"))):
+        raise SystemExit("fm1.toml id_suffix: digits only")
     name = STEM + ".fwsc"
     if a.release:
         # identity: the prefix + major, minor, patch as two digits each (0.1 -> FM-1_0000100): FM-1 is the

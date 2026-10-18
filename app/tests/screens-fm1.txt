@@ -1,0 +1,19 @@
+# Erik37 on the FM-1: its screens (tests/golden/fm1/)
+#   app/build/host/erik37_host app/tests/screens-fm1.txt OUTDIR
+wait 4800
+key 2 down 96
+key 9 down 84
+key 14 down 100
+wait 90
+shot play-fm1-chord.png
+key 2 up
+key 9 up
+key 14 up
+wait 1500
+turn PRESET 1
+wait 60
+shot play-fm1-user.png
+wait 1400
+turn SELECT 3
+wait 1400
+shot about-fm1.png

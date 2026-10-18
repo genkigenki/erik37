@@ -11,6 +11,7 @@ instructions (a backward branch closes each), as the repo's other budgets count 
   two layers  a second stream (the attack's first 0.3 s, at most --xf notes at once)
   the bus     the reverb (8-line FDN, every 2nd sample), the resonance (12 combs, every 4th), the tone EQ (both
               channels), the mix and the output, the block's upkeep / 32, the keys' poll
+The pitch wheel all the way up (+2 semitones: the streams decode 12 % more) is held to the same limit.
 Cycles: 1.3 an instruction (pi32v2: mostly single-cycle; loads, multiplies and taken branches more), against 320 MHz
 (the SDK's clock) and 240 MHz. The worst case: every voice sounding, --xf of them in their two-layer attack, the four
 fading slots and the release noises busy. Fails above --limit % at 320 MHz (default 75)."""
@@ -100,9 +101,18 @@ def main():
         if v == nv and r["worst_320"] > limit:
             ok = False
     rep["table"] = rows
+    # the pitch wheel all the way up (+2 semitones): every stream decodes 2^(2/12) as many source samples
+    Rb = R * 2 ** (2 / 12)
+    Vb = run + dec * Rb + out + upkeep
+    worst_b = B + nv * Vb + min(nv, nx) * (run + dec * Rb) + 4 * Vb + 4 * VN
+    wb = round(worst_b * CPI / (320e6 / FS) * 100, 1)
+    rep["worst_320_bent_up"] = wb
+    print(f"  {nv} voices, the pitch wheel all the way up: worst {wb:5.1f} % at 320 MHz")
+    if wb > limit:
+        ok = False
     if "--report" in a:
         json.dump(rep, open(arg("--report", ""), "w"), indent=1)
-    print(f"  {'ok  ' if ok else 'FAIL'} {nv} voices, the worst case within {limit:.0f} % at 320 MHz")
+    print(f"  {'ok  ' if ok else 'FAIL'} {nv} voices, the worst case within {limit:.0f} % at 320 MHz (the wheel up too)")
     return 0 if ok else 1
 
 

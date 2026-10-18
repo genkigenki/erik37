@@ -101,8 +101,8 @@ EB Garamond / Playfair Display (their hairlines break up at 10-12 px). Cormorant
     (Cinzel 9) with a value bar (gold over a gold_deep track, lozenge r 2.5 marker) or, for a choice,
     n lozenges with the current one bigger and gold.
   * The knob being turned has a gold_hi label and bar.
-  * Main page: K1 tone, K2 room, K3 reverb, K4 brilliance. The tags read K1-K4 as the brief says. If the page
-    knobs end up on the SMK's lower row, the tags read K5-K8; only the strings change.
+  * Main page: K1 tone, K2 room, K3 reverb, K4 the metronome's tempo. The tags read K1-K4 as the brief says. If
+    the page knobs end up on the SMK's lower row, the tags read K5-K8; only the strings change.
 
 **TONE & TOUCH (page I of II):**
 * Header with two page lozenges at the right; under it the tone tabs.
@@ -146,20 +146,20 @@ EB Garamond / Playfair Display (their hairlines break up at 10-12 px). Cormorant
 
 Pads 1-8 are the top row and 9-16 the bottom, read like text.
 
+Since 1.1 (the pedals moved to SCALE, CHORD and SEQ REC; `pads/pads.png` still shows 1.0's map):
+
 | Pads | Function |
 |---|---|
-| 1-4 | tone: CONCERT, STUDIO, VINTAGE, JAZZ (one of four) |
-| 5-8 | room: DRY, CHAMBER, HALL, CHURCH (one of four) |
-| 9-11 | pedals in their order under a grand: UNA CORDA, SOSTENUTO, SUSTAIN. Gold while held; a tap latches (ivory), the next tap releases. The PEDAL jack is sustain. |
-| 12 | string resonance on / off |
-| 13-15 | brilliance: MELLOW, NATURAL, BRILLIANT (three steps; the knob sets it finer) |
-| 16 | metronome on / off (a proposal, for the sound side to decide) |
+| 1-4 | the voices: CONCERT, STUDIO, VINTAGE, JAZZ (a tone in its room) |
+| 5-16 | the user presets USER 1-12: a short press recalls, held a second saves the sound there |
 
-| Level | LED value | Seen as | Meaning |
-|---|---|---|---|
-| off | 72, 54, 34 | 104, 90, 72 | dim warm grey, always clearly visible, never dark |
-| on | 255, 190, 110 | 240, 222, 178 | warm ivory: the current choice, a latched toggle |
-| active | 255, 140, 16 | 255, 190, 70 | bright gold: a pedal held, a pad while pressed |
+| Pads | LED value | Meaning |
+|---|---|---|
+| voice, dim | 120, 72, 10 | amber: a voice to choose |
+| voice, bright | 255, 140, 16 | bright gold: the voice chosen, a pad while pressed |
+| preset, empty | 0, 0, 0 | dark |
+| preset, dim | 72, 54, 34 | warm grey (1.0's "off", clearly visible): filled |
+| preset, bright | 255, 190, 110 | warm ivory: the preset chosen, a pad while pressed |
 
 The LED values carry little blue because the pads' LEDs turn warm tones cold. Check them on the hardware.
 Toggles fire once per press (~180 ms debounce), and each toggle uses one pad.

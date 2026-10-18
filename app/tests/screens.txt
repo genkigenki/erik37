@@ -10,7 +10,7 @@ wait 1100
 shot boot-4.png
 wait 1500
 shot play-idle.png
-tappad 10
+tap REC
 keybed 0 down 96
 keybed 7 down 84
 keybed 16 down 100
@@ -25,19 +25,19 @@ keybed 19 up
 keybed 24 up
 wait 700
 shot play-sustain.png
-tappad 10
+tap REC
 wait 1500
-tappad 8
+tap SEL
 keybed 12 down 40
 keybed 24 down 50
 wait 60
-tappad 9
+tap ENV
 wait 200
 shot play-una-sost.png
 keybed 12 up
 keybed 24 up
-tappad 8
-tappad 9
+tap SEL
+tap ENV
 wait 1500
 tap OCT+
 wait 60
@@ -46,12 +46,12 @@ tap OCT-
 turn K3 4
 wait 60
 shot play-knob.png
-turn SELECT 1
+tap RIGHT
 wait 1400
 turn K1 1
 wait 60
 shot tone-hard.png
-turn SELECT 1
+tap RIGHT
 wait 1400
 shot room-hall.png
 turn K1 -2
@@ -66,6 +66,26 @@ turn K2 25
 turn K4 10
 wait 1400
 shot room-church.png
-turn SELECT 1
+tap RIGHT
 wait 1400
 shot about.png
+tap HOME
+wait 1400
+turn K4 2
+wait 60
+shot play-tempo.png
+wait 1400
+tappad 1
+wait 100
+shot play-voice.png
+wait 1400
+tappad 6
+wait 100
+shot play-user-empty.png
+wait 1400
+pad 6 down
+wait 1100
+pad 6 up
+wait 60
+shot play-user-saved.png
+wait 1400

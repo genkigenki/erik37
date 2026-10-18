@@ -3,7 +3,7 @@
 # Erik37: Copyright (C) 2026 M. Geisler (genkigenki/makkuro)
 # Erik37's tests (Linux / WSL; the toolchain and the SDK as for ./build.sh): the engine on the host, the firmware's
 # CPU budget, its flash, the update loader over the whole app area, the packages, the simulator (the controls, the
-# sound) and the screens against their golden images.
+# sound) and the screens against their golden images; the FM-1 build's package, CPU budget, simulator and screens.
 #   app/tests/run_tests.sh        (after ./build.sh: the packages and the host simulator are built)
 set -u
 cd "$(dirname "$0")/../.."
@@ -30,11 +30,11 @@ run flash "$PY" app/tests/flash_test.py $B
 # loader must write it up to 0x9CFFF (the FM-1's 0x93000 stopped a port's install part-way)
 run loader-range sh -c "$PY -c \"import os; open('$OUT/full.bin','wb').write(open('$B/erik37.bin','rb').read() + os.urandom(0x97400 - os.path.getsize('$B/erik37.bin')))\" && \
     head -c 60000 $B/erik37.bin > $OUT/old.bin && \
-    $PY base/tools/fm1pkg_make.py --board smk37 --product 'SMK-37 Pro_480100' $OUT/full.bin $B/loader/ota.bin $OUT/full.fwsc >/dev/null && \
-    $PY base/tools/fm1pkg_make.py --board smk37 --product 'SMK-37 Pro_480100' $OUT/old.bin $B/loader/ota.bin $OUT/old.fwsc >/dev/null && \
+    $PY base/tools/fm1pkg_make.py --board smk37 --product 'SMK-37 Pro_480101' $OUT/full.bin $B/loader/ota.bin $OUT/full.fwsc >/dev/null && \
+    $PY base/tools/fm1pkg_make.py --board smk37 --product 'SMK-37 Pro_480101' $OUT/old.bin $B/loader/ota.bin $OUT/old.fwsc >/dev/null && \
     $CC -w -DBOARD_SMK37=1 -o $OUT/ldr_test base/tests/ldr_test.c && $OUT/ldr_test $OUT/old.fwsc $OUT/full.fwsc"
 for m in pro elite mke; do
-    case $m in pro) d=smk37; id="SMK-37 Pro_480100";; elite) d=smk37-elite; id="SMK-37 Elite_480100";; mke) d=smk37-mke; id="MKE-P37_480100";; esac
+    case $m in pro) d=smk37; id="SMK-37 Pro_480101";; elite) d=smk37-elite; id="SMK-37 Elite_480101";; mke) d=smk37-mke; id="MKE-P37_480101";; esac
     f=$(ls app/build/$d/*.fwsc 2>/dev/null | head -1)
     if [ -n "$f" ]; then run package-$m "$PY" base/tests/smk_pkg_test.py "$f" "$id"; else echo "  skip package-$m (not built)"; fi
 done
@@ -43,5 +43,21 @@ mkdir -p "$OUT/play" "$OUT/screens"
 run simulator $B/host/erik37-smk37_host app/tests/play.txt "$OUT/play"
 run screens-run $B/host/erik37-smk37_host app/tests/screens.txt "$OUT/screens"
 run screens "$PY" app/tests/compare_shots.py "$OUT/screens"
+# the FM-1 build
+F=app/build
+if [ -f $F/erik37.fwsc ]; then
+    run fm1-package "$PY" app/tests/fm1_pkg_test.py $F/erik37.fwsc $F/erik37.bin "FM-1_480101"
+    run fm1-cpu-budget "$PY" app/tests/target_budget.py $F/erik37.dis --report $OUT/cpu_budget_fm1.json
+else
+    echo "  skip fm1-package (not built)"
+fi
+if [ -x $F/host/erik37_host ]; then
+    mkdir -p "$OUT/play-fm1" "$OUT/screens-fm1"
+    run fm1-simulator $F/host/erik37_host app/tests/play-fm1.txt "$OUT/play-fm1"
+    run fm1-screens-run $F/host/erik37_host app/tests/screens-fm1.txt "$OUT/screens-fm1"
+    run fm1-screens "$PY" app/tests/compare_shots.py "$OUT/screens-fm1" --board fm1
+else
+    echo "  skip fm1-simulator (not built)"
+fi
 [ $FAIL -eq 0 ] && echo "all tests passed" || echo "TESTS FAILED"
 exit $FAIL

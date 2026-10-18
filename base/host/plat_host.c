@@ -51,6 +51,9 @@
  *   expect padN 0xRRGGBB | expect smk_leds N                       a pad's colour, the four LEDs (bits SB_*)
  */
 #define PLAT_HOST 1
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199309L       /* clock_gettime under -std=c99 */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

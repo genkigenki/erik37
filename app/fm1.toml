@@ -1,7 +1,8 @@
 # Erik37's build settings (fm1-base's tools/build.py: ./build.sh)
 name = "ERIK37"                # the build's files: erik37-smk37.fwsc
-id_prefix = "FM-1_48"          # package identity family _48x: FM-1 builds FM-1_4800
-smk_id_prefix = "4801"         # the SMK-37: SMK-37 Pro_480100 (0.1; four digits keep the Elite's name within 20)
+id_prefix = "FM-1_4801"        # package identity family _4801xx: the FM-1 build FM-1_4801 + id_suffix
+smk_id_prefix = "4801"         # the SMK-37: SMK-37 Pro_4801 + id_suffix (four digits keep the Elite's name within 20)
+id_suffix = "01"               # 1.0 was _480100, 1.1 is _480101 (SMK-37 Pro_480101, FM-1_480101)
 usb_manufacturer = "erik37"
 usb_product = "ERIK37"
 words = "words.tsv"

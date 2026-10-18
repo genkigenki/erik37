@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: MPL-2.0
  * Erik37: Copyright (C) 2026 M. Geisler (genkigenki/makkuro) */
-/* Erik37: a grand piano for the M-Vave SMK-37. The keys (velocity through the touch curve), the pedals (the PEDAL
- * jack, the pads, SEQ REC, the mod wheel, MIDI), the settings and their pages; the engine (dsp/erk.c) renders in
- * the audio interrupt. Part of fm1-base's unity build (device/unity.c, host/plat_host.c): gfx.c and announce.c are
- * in scope; draw.c, ui.c and boot.c are this app's. */
+/* Erik37: a grand piano for the M-Vave SMK-37 (and the FM-1). The keys (velocity through the touch curve), the
+ * pedals (the PEDAL jack, SEQ REC, SCALE, CHORD, the mod wheel, MIDI), the pitch wheel, the voices and the user
+ * presets (the pads), the settings and their pages; the engine (dsp/erk.c) renders in the audio interrupt. Part of
+ * fm1-base's unity build (device/unity.c, host/plat_host.c): gfx.c and announce.c are in scope; draw.c, ui.c and
+ * boot.c are this app's. */
 #include "dsp/erk.h"
 #include "erk_bank_data.h"
 #include "draw.c"
@@ -14,7 +15,8 @@ typedef struct {
     uint32_t magic;
     uint8_t tone, room, curve, una;      /* tone 0..3, room 0..3 (dry, chamber, hall, church), touch 0..3, una 0..100 */
     uint8_t size, amount, width, brill;  /* 0..100 */
-    uint8_t reso, reso_on, bpm, rsv;     /* resonance 0..100; the metronome's tempo (bpm) */
+    uint8_t reso, reso_on, bpm, pad;     /* resonance 0..100; the metronome's tempo (bpm); the voice or preset chosen
+                                          * last (1..16 as the pads, 0 none) */
     int8_t octave;                       /* -2 .. +2 */
     uint8_t rsv2[3];
 } settings_t;
@@ -37,6 +39,7 @@ static void settings_defaults(void)
     set.reso = 50;
     set.reso_on = 1;
     set.bpm = 96;
+    set.pad = 1;
     set.octave = 0;
 }
 
@@ -44,7 +47,45 @@ static int settings_ok(void)
 {
     return set.magic == SET_MAGIC && set.tone < 4 && set.room < 4 && set.curve < 4 && set.una <= 100 &&
            set.size <= 100 && set.amount <= 100 && set.width <= 100 && set.brill <= 100 && set.reso <= 100 &&
-           set.reso_on <= 1 && set.bpm >= 30 && set.bpm <= 240 && set.octave >= -2 && set.octave <= 2;
+           set.reso_on <= 1 && set.bpm >= 30 && set.bpm <= 240 && set.octave >= -2 && set.octave <= 2 && set.pad <= 16;
+}
+
+/* ---------------------------------------------------------------- the voices and the user presets */
+/* the four voices (pads 1-4): a tone in the room that suits it */
+static const struct {
+    uint8_t tone, room, size, amount, brill;
+} VOICE[4] = {
+    {ERK_CONCERT, 2, 50, 38, 50},        /* the concert grand in the hall */
+    {ERK_STUDIO, 1, 35, 22, 58},         /* close and bright in the chamber */
+    {ERK_VINTAGE, 1, 55, 30, 42},        /* the old grand, darker, in a warmer room */
+    {ERK_JAZZ, 1, 25, 18, 46},           /* round, in a small club */
+};
+
+/* the user presets (pads 5-16, USER 1-12): the whole sound, kept in their own store object */
+#define NSLOT 12
+#define SLOT_PAD0 4                      /* pad 5 (index 4) is USER 1 */
+#define SLOT_MAGIC 0x31505245u           /* "ERP1" */
+typedef struct {
+    uint8_t used, tone, room, curve, una, size, amount, width, brill, reso, reso_on, rsv;
+} slot_t;
+static struct {
+    uint32_t magic;
+    slot_t s[NSLOT];
+} slots;
+
+static int slots_ok(void)
+{
+    int i;
+    if (slots.magic != SLOT_MAGIC)
+        return 0;
+    for (i = 0; i < NSLOT; i++) {
+        const slot_t *p = &slots.s[i];
+        if (p->used > 1 || (p->used && (p->tone > 3 || p->room > 3 || p->curve > 3 || p->una > 100 || p->size > 100 ||
+                                        p->amount > 100 || p->width > 100 || p->brill > 100 || p->reso > 100 ||
+                                        p->reso_on > 1)))
+            return 0;
+    }
+    return 1;
 }
 
 static const char *const CURVE_NAME[4] = {"Soft", "Normal", "Hard", "Fixed"};
@@ -86,8 +127,8 @@ static void changed(void)
 }
 
 /* ---------------------------------------------------------------- the main loop -> the audio interrupt */
-enum { EV_SUS_PAD, EV_SOST, EV_SOFT, EV_ALL_OFF, EV_METRO };
-#define EVQ 32u
+enum { EV_SUS_PAD, EV_SOST, EV_SOFT, EV_ALL_OFF, EV_METRO, EV_NOTE_ON, EV_NOTE_OFF };
+#define EVQ 64u
 static volatile uint32_t evq[EVQ];
 static volatile uint32_t evq_w, evq_r;
 
@@ -102,12 +143,15 @@ static void ev_put(uint32_t type, uint32_t val)
 
 /* ---------------------------------------------------------------- the audio side */
 static struct {
+#if BOARD_SMK37
     uint8_t key_note[SMK_NKEYBED];       /* the MIDI note each keybed key started (the octave may change while held) */
+#endif
     uint64_t held;                       /* keybed keys down, as the render saw them */
-    int sus_pad, sus_jack, sus_midi, sus_wheel, sus_now;   /* 0..127 each; the pedal is the largest */
+    int sus_pad, sus_jack, sus_midi, sus_wheel, sus_now;   /* 0..127 each; the pedal is the strongest */
     int sost_pad, sost_midi, soft_pad, soft_midi, sost_now, soft_now;
     int jack_rest, jack_init;
     int metro_on;
+    int bend, bend_sent;                 /* the pitch wheel, -127..127; what went out over MIDI */
     uint32_t metro_acc, metro_beat;
     volatile uint32_t last_vel, notes;   /* the last velocity (after the curve), notes played */
 } au;
@@ -145,6 +189,40 @@ static void pedals_update(void)
         midi_out(0xB0u, 67u, (uint32_t)sf);
     }
 }
+
+/* the pitch wheel (and MIDI pitch bend): +-2 semitones. 2^(x / 6) in Q16 by its series (x -1..1, within half a
+ * cent). v of full: the bend */
+#define BEND_SEMIS 2
+static void bend_set(int v, int full, int send)
+{
+    int32_t l, r;
+    v = v < -full ? -full : v > full ? full : v;
+    l = (int32_t)v * (int32_t)(65536.0 * 0.6931472 * BEND_SEMIS / 12.0) / full;   /* x ln 2, Q16 */
+    r = 65536 + l + ((l * l) >> 17) + (((l * l) >> 16) * l) / 393216;
+    erk_bend(v ? (int)r : 65536);
+    au.bend = v * 127 / full;
+    if (send && au.bend != au.bend_sent) {    /* out over USB-MIDI as pitch bend, 14 bits */
+        uint32_t b = (uint32_t)(8192 + au.bend * 8191 / 127);
+        au.bend_sent = au.bend;
+        midi_out(0xE0u, b & 0x7Fu, b >> 7);
+    }
+}
+
+#if BOARD_SMK37
+/* the mod wheel: the sustain pedal, half pedal in between: at rest (and a little above) exactly off, full near the
+ * top. The pitch wheel's dead zone keeps a wheel at rest exactly in tune */
+#define MOD_DEAD 8
+#define MOD_FULL 119
+#define PITCH_DEAD 3
+static int wheel_sustain(int32_t mw)
+{
+    if (mw <= MOD_DEAD)
+        return 0;
+    if (mw >= MOD_FULL)
+        return 127;
+    return (int)((mw - MOD_DEAD) * 127 / (MOD_FULL - MOD_DEAD));
+}
+#endif
 
 static void keybed_poll(void)
 {
@@ -191,8 +269,11 @@ static void keybed_poll(void)
     }
     {
         int32_t pw, mw;
-        if (plat_wheels(&pw, &mw))
-            au.sus_wheel = mw < 0 ? 0 : mw > 127 ? 127 : mw;   /* the mod wheel: a sustain pedal with half pedal */
+        if (plat_wheels(&pw, &mw)) {
+            au.sus_wheel = wheel_sustain(mw);
+            bend_set(pw < -PITCH_DEAD ? (int)pw + PITCH_DEAD : pw > PITCH_DEAD ? (int)pw - PITCH_DEAD : 0,
+                     127 - PITCH_DEAD, 1);
+        }
     }
 #endif
 }
@@ -217,6 +298,8 @@ static void midi_poll(void)
                 au.soft_midi = (int)d2;
             else if (d1 == 120u || d1 == 123u)
                 erk_all_off();
+        } else if ((st & 0xF0u) == 0xE0u) {
+            bend_set((int)(d1 | d2 << 7) - 8192, 8191, 0);
         }
     }
 }
@@ -231,6 +314,8 @@ static void events_poll(void)
         case EV_SOST: au.sost_pad = (int)v; break;
         case EV_SOFT: au.soft_pad = (int)v; break;
         case EV_ALL_OFF: erk_all_off(); break;
+        case EV_NOTE_ON: erk_note_on((int)(v & 0xFFu), (int)(v >> 8 & 0xFFu)); break;
+        case EV_NOTE_OFF: erk_note_off((int)v); break;
         case EV_METRO:
             au.metro_on = (int)v;
             au.metro_acc = 0xFFFFFFFFu;       /* the first tick at once */
@@ -272,6 +357,10 @@ void app_init(void)
 {
     if (plat_store_load(OBJ_SETTINGS, &set, sizeof set) != (int)sizeof set || !settings_ok())
         settings_defaults();
+    if (plat_store_load(OBJ_PRESETS, &slots, sizeof slots) != (int)sizeof slots || !slots_ok()) {
+        memset(&slots, 0, sizeof slots);
+        slots.magic = SLOT_MAGIC;
+    }
     erk_bank_open(&bank, ERK_BANK);
     erk_init(&bank, &ENGINE);
     apply_settings();
@@ -280,6 +369,10 @@ void app_init(void)
 /* ---------------------------------------------------------------- the UI */
 enum { PG_PLAY, PG_TONE, PG_ROOM, PG_ABOUT, NPAGES };
 enum { ST_BOOT, ST_RUN };
+enum { PD_SOFT, PD_SOST, PD_SUS, NPD };      /* the pedal buttons: SCALE, CHORD, SEQ REC (FM-1: SEL, ENV, REC) */
+static const uint8_t PD_BTN[NPD] = {B_SEL, B_ENV, B_REC};
+#define LONG_MS 1000u                        /* a long press: save */
+#define PAD_DEBOUNCE_MS 180u
 static struct {
     int state, page, drawn_page;
     uint32_t boot_t0;
@@ -287,13 +380,16 @@ static struct {
     int active;                          /* the knob being turned (-1 none) */
     uint32_t active_at;
     uint32_t btn, sbtn;                  /* held at the last input */
-    uint32_t pads_prev, pad_down_at[16];
-    uint8_t pad_consumed[16];
-    int latch_sus, latch_sost, latch_soft, hold_sus, hold_sost, hold_soft, rec_down;
-    uint32_t rec_at;
+    uint8_t pd_latch[NPD], pd_hold[NPD]; /* the pedal buttons: a tap latches, held is down while held */
+    uint32_t pd_at[NPD];
+    uint32_t pads_prev, pads_down, pads_done;   /* pads: held at the last input, presses taken, long presses done */
+    uint32_t pad_at[16];
     int metro;
-    int fad_last[4];
-    uint32_t home_at;
+    uint32_t home_at, save_at;
+    int save_done;
+    int slot_sel;                        /* the FM-1: the user preset PRESETS points at */
+    uint32_t fm_keys;                    /* the FM-1: the keys held */
+    uint8_t fm_note[NKEYS];
     int debug;
     uint32_t debug_drawn;
     /* what is on the screen (redraw when it changes) */
@@ -338,6 +434,88 @@ void app_say(const char *a, const char *b)
 #include "ui.c"
 #include "boot.c"
 
+/* ---------------------------------------------------------------- the voices and the presets, chosen */
+static void sound_changed(void)              /* tone, room ... all at once: every page and the header again */
+{
+    changed();
+    ui.head_q = ui.strip_q = -1;
+    ui.full |= ui.page != PG_PLAY;
+}
+
+static void voice_select(int v)
+{
+    set.tone = VOICE[v].tone;
+    set.room = VOICE[v].room;
+    set.size = VOICE[v].size;
+    set.amount = VOICE[v].amount;
+    set.brill = VOICE[v].brill;
+    set.pad = (uint8_t)(v + 1);
+    sound_changed();
+    app_say(TONE_NAME[set.tone], ROOM_NAME[set.room]);
+}
+
+static void slot_name(char *t, int i)
+{
+    t[0] = 0;
+    cat_s(t, "USER ");
+    itoa_s(i + 1, t + 5);
+}
+
+static void slot_recall(int i)
+{
+    const slot_t *p = &slots.s[i];
+    char t[12];
+    slot_name(t, i);
+    if (!p->used) {                          /* (a pad held a second, the FM-1's SAVE held: saved there) */
+#if BOARD_SMK37
+        app_say(t, "HOLD TO SAVE");
+#else
+        app_say(t, "EMPTY");
+#endif
+        return;
+    }
+    set.tone = p->tone;
+    set.room = p->room;
+    set.curve = p->curve;
+    set.una = p->una;
+    set.size = p->size;
+    set.amount = p->amount;
+    set.width = p->width;
+    set.brill = p->brill;
+    set.reso = p->reso;
+    set.reso_on = p->reso_on;
+    set.pad = (uint8_t)(SLOT_PAD0 + i + 1);
+    sound_changed();
+    app_say(t, TONE_NAME[set.tone]);
+}
+
+static void slot_save(int i)
+{
+    slot_t *p = &slots.s[i];
+    char t[12];
+    p->used = 1;
+    p->tone = set.tone;
+    p->room = set.room;
+    p->curve = set.curve;
+    p->una = set.una;
+    p->size = set.size;
+    p->amount = set.amount;
+    p->width = set.width;
+    p->brill = set.brill;
+    p->reso = set.reso;
+    p->reso_on = set.reso_on;
+    p->rsv = 0;
+    slot_name(t, i);
+    if (plat_store_save(OBJ_PRESETS, &slots, sizeof slots) == 0) {
+        set.pad = (uint8_t)(SLOT_PAD0 + i + 1);
+        set_dirty = 1;
+        set_changed_at = plat_ms();
+        app_say("SAVED", t);
+    } else {
+        app_say("SAVE FAILED", t);
+    }
+}
+
 /* ---------------------------------------------------------------- the knobs of each page */
 static void knobs_of(int page, knob_t *k)
 {
@@ -357,9 +535,10 @@ static void knobs_of(int page, knob_t *k)
         k[2].label = "reverb";
         pct_text(k[2].value, set.amount);
         k[2].amt = set.amount / 100.0f;
-        k[3].label = "brilliance";
-        pct_text(k[3].value, set.brill);
-        k[3].amt = set.brill / 100.0f;
+        k[3].label = "tempo";
+        itoa_s(set.bpm, k[3].value);
+        cat_s(k[3].value, " bpm");
+        k[3].amt = (set.bpm - 30) / 210.0f;
     } else if (page == PG_TONE) {
         k[0].label = "touch";
         cat_s(k[0].value, CURVE_NAME[set.curve]);
@@ -373,7 +552,7 @@ static void knobs_of(int page, knob_t *k)
             pct_text(k[2].value, set.reso);
         else
             cat_s(k[2].value, "off");
-        k[2].amt = set.reso / 100.0f;
+        k[2].amt = set.reso_on ? set.reso / 100.0f : 0;
         k[3].label = "una corda";
         pct_text(k[3].value, set.una);
         k[3].amt = set.una / 100.0f;
@@ -419,23 +598,35 @@ static void knobs_of(int page, knob_t *k)
     }
 }
 
-/* a page knob by detents (or a fader's absolute position: abs >= 0, 0..127) */
-static void knob_turn(int page, int i, int d, int abs)
+/* a page knob by detents. Resonance turned down past 0 is off, turned up again on */
+static void knob_turn(int page, int i, int d)
 {
     uint8_t *v = 0;
     int lo = 0, hi = 100, step = 2, choice = 0;
     if (page == PG_ABOUT)
         return;
     if (page == PG_PLAY) {
-        static uint8_t *const P[4] = {&set.tone, &set.room, &set.amount, &set.brill};
+        static uint8_t *const P[4] = {&set.tone, &set.room, &set.amount, &set.bpm};
         v = P[i];
         choice = i < 2;
+        if (i == 3) {
+            lo = 30;
+            hi = 240;
+        }
     } else if (page == PG_TONE) {
         static uint8_t *const P[4] = {&set.curve, &set.brill, &set.reso, &set.una};
         v = P[i];
         choice = i == 0;
-        if (i == 2)
-            set.reso_on = 1;
+        if (i == 2) {
+            if (d < 0 && set.reso_on && set.reso == 0) {
+                set.reso_on = 0;
+                changed();
+            } else if (d > 0 && !set.reso_on) {
+                set.reso_on = 1;
+                changed();
+                d = 0;
+            }
+        }
     } else {
         static uint8_t *const P[4] = {&set.room, &set.size, &set.amount, &set.width};
         v = P[i];
@@ -446,7 +637,7 @@ static void knob_turn(int page, int i, int d, int abs)
         step = 1;
     }
     {
-        int nv = abs >= 0 ? (choice ? abs * 4 / 128 : abs * 100 / 127) : *v + d * step;
+        int nv = *v + d * step;
         nv = nv < lo ? lo : nv > hi ? hi : nv;
         if (nv != *v) {
             *v = (uint8_t)nv;
@@ -456,56 +647,45 @@ static void knob_turn(int page, int i, int d, int abs)
     ui.active = i;
     ui.active_at = plat_ms();
     ui.strip_q = -1;
-    if (page != PG_PLAY || choice)
-        ui.full = page != PG_PLAY;           /* the settings pages draw their pictures from the values */
-    if (page == PG_PLAY && i < 2)
+    if (page != PG_PLAY)
+        ui.full = 1;                          /* the settings pages draw their pictures from the values */
+    if (page == PG_PLAY && choice)
         ui.head_q = -1;
 }
 
 /* ---------------------------------------------------------------- pads and lights */
-enum { LV_OFF, LV_ON, LV_ACTIVE };
-static void pad_light(int p, int lv)
-{
-#if BOARD_SMK37
-    static const uint8_t L[3][3] = {{72, 54, 34}, {255, 190, 110}, {255, 140, 16}};
-    plat_pad_rgb(p, L[lv][0], L[lv][1], L[lv][2]);
-#else
-    (void)p;
-    (void)lv;
-#endif
-}
-
-static int brill_step(void) { return set.brill < 38 ? 0 : set.brill < 66 ? 1 : 2; }
-
 static void lights(uint32_t pads_held)
 {
+#if BOARD_SMK37
+    /* the voices amber (dim) and bright gold (the one chosen); the presets warm grey (filled), warm ivory (the one
+     * chosen), dark (empty). A pad held is bright. (Little blue: the LEDs turn warm tones cold, design/DESIGN.md) */
+    static const uint8_t VDIM[3] = {120, 72, 10}, VON[3] = {255, 140, 16}, SDIM[3] = {72, 54, 34},
+                         SON[3] = {255, 190, 110};
     int p;
     for (p = 0; p < 16; p++) {
-        int lv = LV_OFF, held = (int)(pads_held >> p & 1u);
-        if (p < 4)
-            lv = set.tone == p ? LV_ON : LV_OFF;
-        else if (p < 8)
-            lv = set.room == p - 4 ? LV_ON : LV_OFF;
-        else if (p == 8)
-            lv = ui.hold_soft ? LV_ACTIVE : ui.latch_soft ? LV_ON : LV_OFF;
-        else if (p == 9)
-            lv = ui.hold_sost ? LV_ACTIVE : ui.latch_sost ? LV_ON : LV_OFF;
-        else if (p == 10)
-            lv = ui.hold_sus ? LV_ACTIVE : ui.latch_sus ? LV_ON : LV_OFF;
-        else if (p == 11)
-            lv = set.reso_on ? LV_ON : LV_OFF;
-        else if (p < 15)
-            lv = brill_step() == p - 12 ? LV_ON : LV_OFF;
-        else
-            lv = ui.metro ? LV_ON : LV_OFF;
-        if (held && lv != LV_ACTIVE && p >= 8 && p <= 10)
-            lv = LV_ACTIVE;
-        pad_light(p, held && (p < 8 || p > 10) ? LV_ACTIVE : lv);
+        int on = set.pad == p + 1 || (pads_held >> p & 1u);
+        const uint8_t *c;
+        if (p < SLOT_PAD0) {
+            c = on ? VON : VDIM;
+        } else if (on) {
+            c = SON;
+        } else if (slots.s[p - SLOT_PAD0].used) {
+            c = SDIM;
+        } else {
+            plat_pad_rgb(p, 0, 0, 0);
+            continue;
+        }
+        plat_pad_rgb(p, c[0], c[1], c[2]);
     }
+#else
+    (void)pads_held;
+#endif
     {
         uint32_t b = 0;
-        if (ui.latch_sus || ui.rec_down)
-            b |= 1u << B_REC;
+        int i;
+        for (i = 0; i < NPD; i++)
+            if (ui.pd_latch[i] || ui.pd_hold[i])
+                b |= 1u << PD_BTN[i];
         if (ui.metro)
             b |= LED_PLAY_GREEN;
         if (set_dirty)
@@ -518,93 +698,100 @@ static void lights(uint32_t pads_held)
     }
 }
 
-/* a pedal pad (or SEQ REC): a tap latches it (the next tap lets go), held it is down while held */
-static void pedal_press(int *latch, int *hold, uint8_t *consumed)
-{
-    if (*latch) {
-        *latch = 0;
-        *consumed = 1;
-    } else {
-        *hold = 1;
-        *consumed = 0;
-    }
-}
-static void pedal_release(int *latch, int *hold, uint8_t consumed, uint32_t held_ms)
-{
-    if (!consumed && held_ms < 300u)
-        *latch = 1;
-    *hold = 0;
-}
-
 static void pedals_send(void)
 {
-    ev_put(EV_SUS_PAD, (ui.latch_sus || ui.hold_sus || ui.rec_down) ? 127u : 0u);
-    ev_put(EV_SOST, (uint32_t)(ui.latch_sost || ui.hold_sost));
-    ev_put(EV_SOFT, (ui.latch_soft || ui.hold_soft) ? 127u : 0u);
+    ev_put(EV_SUS_PAD, (ui.pd_latch[PD_SUS] || ui.pd_hold[PD_SUS]) ? 127u : 0u);
+    ev_put(EV_SOST, (uint32_t)(ui.pd_latch[PD_SOST] || ui.pd_hold[PD_SOST]));
+    ev_put(EV_SOFT, (ui.pd_latch[PD_SOFT] || ui.pd_hold[PD_SOFT]) ? 127u : 0u);
 }
 
+/* the pedal buttons: a tap latches the pedal (the next tap lets go), held it is down while held */
+static void pedal_buttons(uint32_t down, uint32_t up, uint32_t now)
+{
+    int i, chg = 0;
+    for (i = 0; i < NPD; i++) {
+        uint32_t b = 1u << PD_BTN[i];
+        if (down & b) {
+            if (ui.pd_latch[i]) {
+                ui.pd_latch[i] = 0;
+            } else {
+                ui.pd_hold[i] = 1;
+                ui.pd_at[i] = now;
+            }
+            chg = 1;
+        }
+        if (up & b) {
+            if (ui.pd_hold[i] && now - ui.pd_at[i] < 300u)
+                ui.pd_latch[i] = 1;
+            ui.pd_hold[i] = 0;
+            chg = 1;
+        }
+    }
+    if (chg)
+        pedals_send();
+}
+
+/* the pads: 1-4 the voices (a press), 5-16 the user presets (a short press recalls, held a second saves). A press
+ * counts once, and not again within PAD_DEBOUNCE_MS */
 static void pads_input(void)
 {
 #if BOARD_SMK37
-    uint32_t hits = plat_pad_hits(), held = plat_pads_held(), up = ui.pads_prev & ~held, now = plat_ms();
+    uint32_t hits = plat_pad_hits(), held = plat_pads_held(), now = plat_ms();
     int p;
     for (p = 0; p < 16; p++) {
         uint32_t b = 1u << p;
-        if (hits & b) {
-            ui.pad_down_at[p] = now;
-            if (p < 4) {
-                if (set.tone != p) {
-                    set.tone = (uint8_t)p;
-                    changed();
-                    ui.head_q = ui.strip_q = -1;
-                    ui.full |= ui.page == PG_TONE;
-                }
-            } else if (p < 8) {
-                if (set.room != p - 4) {
-                    set.room = (uint8_t)(p - 4);
-                    changed();
-                    ui.head_q = ui.strip_q = -1;
-                    ui.full |= ui.page == PG_ROOM;
-                }
-            } else if (p == 8) {
-                pedal_press(&ui.latch_soft, &ui.hold_soft, &ui.pad_consumed[p]);
-            } else if (p == 9) {
-                pedal_press(&ui.latch_sost, &ui.hold_sost, &ui.pad_consumed[p]);
-            } else if (p == 10) {
-                pedal_press(&ui.latch_sus, &ui.hold_sus, &ui.pad_consumed[p]);
-            } else if (p == 11) {
-                set.reso_on ^= 1u;
-                changed();
-                ui.strip_q = -1;
-            } else if (p < 15) {
-                static const uint8_t B[3] = {25, 50, 80};
-                set.brill = B[p - 12];
-                changed();
-                ui.strip_q = -1;
-            } else {
-                ui.pad_consumed[15] = 0;        /* the metronome: on the release (held, K1 sets its tempo) */
+        if ((hits & b) && !(ui.pads_down & b) && now - ui.pad_at[p] >= PAD_DEBOUNCE_MS) {
+            ui.pads_down |= b;
+            ui.pads_done &= ~b;
+            ui.pad_at[p] = now;
+            if (p < SLOT_PAD0) {
+                voice_select(p);
+                ui.pads_done |= b;
             }
         }
-        if (up & b) {
-            uint32_t ms = now - ui.pad_down_at[p];
-            if (p == 8)
-                pedal_release(&ui.latch_soft, &ui.hold_soft, ui.pad_consumed[p], ms);
-            else if (p == 9)
-                pedal_release(&ui.latch_sost, &ui.hold_sost, ui.pad_consumed[p], ms);
-            else if (p == 10)
-                pedal_release(&ui.latch_sus, &ui.hold_sus, ui.pad_consumed[p], ms);
-            else if (p == 15 && !ui.pad_consumed[15]) {
-                ui.metro = !ui.metro;
-                ev_put(EV_METRO, (uint32_t)ui.metro);
-            }
+        if (!(ui.pads_down & b))
+            continue;
+        if ((held & b) && !(ui.pads_done & b) && now - ui.pad_at[p] >= LONG_MS) {
+            slot_save(p - SLOT_PAD0);         /* held a second: the sound into the preset */
+            ui.pads_done |= b;
+        }
+        if (!(held & b)) {                    /* let go (or a tap over before we looked) */
+            if (!(ui.pads_done & b))
+                slot_recall(p - SLOT_PAD0);
+            ui.pads_down &= ~b;
         }
     }
-    if ((hits | up) & 0x700u)
-        pedals_send();
     ui.pads_prev = held;
     lights(held);
+#else
+    lights(0);
 #endif
 }
+
+#if !BOARD_SMK37
+/* the FM-1's keys: F3..G5, velocity from lib/touch, through the touch curve; to the render as events */
+static void keys_input(void)
+{
+    uint32_t keys, k;
+    touch_poll();
+    keys = touch_keys();
+    for (k = 0; k < NKEYS; k++) {
+        uint32_t bit = 1u << k;
+        if ((keys & bit) && !(ui.fm_keys & bit)) {
+            int note = 53 + (int)k + 12 * set.octave, v = touch(touch_vel(k));
+            ui.fm_note[k] = (uint8_t)note;
+            ev_put(EV_NOTE_ON, (uint32_t)note | (uint32_t)v << 8);
+            midi_out(0x90u, (uint32_t)note, (uint32_t)v);
+            au.last_vel = (uint32_t)v;
+            au.notes++;
+        } else if (!(keys & bit) && (ui.fm_keys & bit)) {
+            ev_put(EV_NOTE_OFF, ui.fm_note[k]);
+            midi_out(0x80u, ui.fm_note[k], 0u);
+        }
+    }
+    ui.fm_keys = keys;
+}
+#endif
 
 static void page_set(int pg)
 {
@@ -615,9 +802,19 @@ static void page_set(int pg)
     }
 }
 
+static void settings_save(void)
+{
+    if (plat_store_save(OBJ_SETTINGS, &set, sizeof set) == 0) {
+        set_dirty = 0;
+        app_say("SAVED", "");
+    } else {
+        app_say("SAVE FAILED", "");
+    }
+}
+
 static void input(void)
 {
-    uint32_t btn = plat_buttons(), down = btn & ~ui.btn, now = plat_ms();
+    uint32_t btn = plat_buttons(), down = btn & ~ui.btn, up = ui.btn & ~btn, now = plat_ms();
     int i;
     int32_t e;
     if (ui.state == ST_BOOT) {                /* any control ends the boot animation */
@@ -630,6 +827,9 @@ static void input(void)
             ui.full = 1;
         }
     }
+#if !BOARD_SMK37
+    keys_input();
+#endif
     if (down & (1u << B_OCTDN) && set.octave > -2) {
         set.octave--;
         changed();
@@ -653,31 +853,26 @@ static void input(void)
         ui.debug = 0;
         ui.head_q = -1;
     }
+    /* BT (the FM-1's SAVE): the settings saved now. The FM-1: held a second, the sound into the user preset that
+     * PRESETS points at */
     if (down & (1u << B_SAVE)) {
-        if (plat_store_save(OBJ_SETTINGS, &set, sizeof set) == 0) {
-            set_dirty = 0;
-            app_say("SAVED", "");
-        } else {
-            app_say("SAVE", "FAILED");
-        }
+        ui.save_at = now;
+        ui.save_done = 0;
+#if BOARD_SMK37
+        settings_save();
+        ui.save_done = 1;
+#endif
     }
-    if (down & (1u << B_REC)) {               /* SEQ REC: the sustain pedal (tap: latched) */
-        ui.rec_at = now;
-        if (ui.latch_sus) {
-            ui.latch_sus = 0;
-            ui.rec_down = 0;
-        } else {
-            ui.rec_down = 1;
-        }
-        pedals_send();
+#if !BOARD_SMK37
+    if ((btn & (1u << B_SAVE)) && !ui.save_done && now - ui.save_at >= LONG_MS) {
+        slot_save(ui.slot_sel);
+        ui.save_done = 1;
     }
-    if ((ui.btn & ~btn) & (1u << B_REC)) {
-        if (ui.rec_down && now - ui.rec_at < 300u)
-            ui.latch_sus = 1;
-        ui.rec_down = 0;
-        pedals_send();
-    }
-    if (down & (1u << B_PLAY)) {              /* SEQ PLAY: the metronome */
+    if ((up & (1u << B_SAVE)) && !ui.save_done)
+        settings_save();
+#endif
+    pedal_buttons(down, up, now);             /* SCALE una corda, CHORD sostenuto, SEQ REC sustain */
+    if (down & (1u << B_PLAY)) {              /* SEQ PLAY: the metronome (its tempo: the play screen's K4) */
         ui.metro = !ui.metro;
         ev_put(EV_METRO, (uint32_t)ui.metro);
     }
@@ -685,7 +880,7 @@ static void input(void)
         ev_put(EV_ALL_OFF, 0);
     ui.btn = btn;
 #if BOARD_SMK37
-    {
+    {                                         /* < >: the pages */
         uint32_t sb = plat_smk_buttons(), sd = sb & ~ui.sbtn;
         if (sd & (1u << SB_LEFT))
             page_set(ui.page - 1);
@@ -693,54 +888,27 @@ static void input(void)
             page_set(ui.page + 1);
         ui.sbtn = sb;
     }
-    for (i = 0; i < 4; i++) {                 /* the faders: the page's four knobs, once moved */
-        int f = plat_fader(i);
-        if (f < 0)
-            continue;
-        if (ui.fad_last[i] < 0)
-            ui.fad_last[i] = f;
-        else if (f > ui.fad_last[i] + 2 || f < ui.fad_last[i] - 2) {
-            ui.fad_last[i] = f;
-            knob_turn(ui.page, i, 0, f);
-        }
-    }
 #endif
-    for (i = 0; i < 4; i++)
-        if ((e = plat_enc(EN_K1 + i)) != 0) {
+    for (i = 0; i < 4; i++)                   /* K1..K4 (the FM-1's KNOB 1..4): the page's four knobs */
+        if ((e = plat_enc(EN_K1 + i)) != 0)
+            knob_turn(ui.page, i, e);
 #if BOARD_SMK37
-            if (i == 0 && (plat_pads_held() >> 15 & 1u)) {   /* pad 16 held: K1 sets the metronome's tempo */
-                char t[16];
-                set.bpm = (uint8_t)clamp(set.bpm + 2 * e, 30, 240);
-                changed();
-                ui.pad_consumed[15] = 1;
-                itoa_s(set.bpm, t);
-                cat_s(t, " BPM");
-                app_say("TEMPO", t);
-                continue;
-            }
-#endif
-            knob_turn(ui.page, i, e, -1);
-        }
-    if ((e = plat_enc(EN_SELECT)) != 0)       /* K6 SELECT: the page */
+    /* K6..K8 (SELECT, ALGORITHM, PRESETS) have no job here: read and dropped */
+    plat_enc(EN_SELECT);
+    plat_enc(EN_ALGO);
+    plat_enc(EN_PRESET);
+#else
+    if ((e = plat_enc(EN_SELECT)) != 0)       /* the FM-1: SELECT the page */
         page_set(ui.page + e);
-    if ((e = plat_enc(EN_ALGO)) != 0) {       /* K7 ALGORITHM: the tone */
-        int t = clamp(set.tone + e, 0, 3);
-        if (t != set.tone) {
-            set.tone = (uint8_t)t;
-            changed();
-            ui.head_q = ui.strip_q = -1;
-            ui.full |= ui.page == PG_TONE;
-        }
+    if ((e = plat_enc(EN_ALGO)) != 0) {       /* ALGORITHM: the voices */
+        int v = set.pad >= 1 && set.pad <= 4 ? set.pad - 1 + e : e > 0 ? 0 : 3;
+        voice_select(clamp(v, 0, 3));
     }
-    if ((e = plat_enc(EN_PRESET)) != 0) {     /* K8 PRESETS: the room */
-        int r = clamp(set.room + e, 0, 3);
-        if (r != set.room) {
-            set.room = (uint8_t)r;
-            changed();
-            ui.head_q = ui.strip_q = -1;
-            ui.full |= ui.page == PG_ROOM;
-        }
+    if ((e = plat_enc(EN_PRESET)) != 0) {     /* PRESETS: the user presets, recalled as it lands on them */
+        ui.slot_sel = clamp(ui.slot_sel + e, 0, NSLOT - 1);
+        slot_recall(ui.slot_sel);
     }
+#endif
     pads_input();
     if (ui.active >= 0 && now - ui.active_at > 1200u) {
         ui.active = -1;
@@ -805,10 +973,12 @@ static void draw_play(int force)
 {
     float lvl[37], sus = erk_sus_q15 / 32767.0f, sost = au.sost_now ? 1.0f : 0.0f, una = erk_soft_q15 / 32767.0f;
     uint8_t held[37];
-    uint64_t kb = 0;
+    uint64_t kb;
     int i, chg = force;
 #if BOARD_SMK37
     kb = plat_keybed();
+#else
+    kb = (uint64_t)ui.fm_keys << 5;           /* F3 is the screen's sixth key */
 #endif
     sus = sus < 0.25f ? 0 : sus > 0.9f ? 1 : sus;
     for (i = 0; i < 37; i++) {
@@ -911,17 +1081,18 @@ void app_splash(void)
 
 void app_ui_init(void)
 {
-    int i;
     ui_setup();
 #if BOARD_SMK37
     plat_smk_pads(SMK_PADS_OWN);
     plat_pad_lights(1);
+#else
+    touch_on(1);                              /* the FM-1's keys: velocity */
 #endif
     ui.active = -1;
     ui.drawn_page = -1;
     ui.full = 1;
-    for (i = 0; i < 4; i++)
-        ui.fad_last[i] = -1;
+    if (set.pad > SLOT_PAD0)
+        ui.slot_sel = set.pad - SLOT_PAD0 - 1;
     if (ui.state == ST_RUN)                   /* (after an update session: straight back) */
         return;
     ui.state = ST_BOOT;
@@ -965,6 +1136,14 @@ int app_expect(const char *what, int *got)
         *got = set.tone;
     else if (!strcmp(what, "room"))
         *got = set.room;
+    else if (!strcmp(what, "size"))
+        *got = set.size;
+    else if (!strcmp(what, "amount"))
+        *got = set.amount;
+    else if (!strcmp(what, "width"))
+        *got = set.width;
+    else if (!strcmp(what, "una"))
+        *got = set.una;
     else if (!strcmp(what, "octave"))
         *got = set.octave;
     else if (!strcmp(what, "curve"))
@@ -973,6 +1152,10 @@ int app_expect(const char *what, int *got)
         *got = set.brill;
     else if (!strcmp(what, "reso_on"))
         *got = set.reso_on;
+    else if (!strcmp(what, "chosen"))
+        *got = set.pad;
+    else if (!strncmp(what, "user", 4))           /* userN: preset N (1..12) is filled */
+        *got = slots.s[clamp(atoi(what + 4) - 1, 0, NSLOT - 1)].used;
     else if (!strcmp(what, "voices"))
         *got = erk_active();
     else if (!strcmp(what, "sustain"))
@@ -981,6 +1164,8 @@ int app_expect(const char *what, int *got)
         *got = au.sost_now;
     else if (!strcmp(what, "soft"))
         *got = au.soft_now;
+    else if (!strcmp(what, "bend"))
+        *got = au.bend;
     else if (!strcmp(what, "vel"))
         *got = (int)au.last_vel;
     else if (!strcmp(what, "notes"))

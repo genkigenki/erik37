@@ -173,7 +173,7 @@ shot site-078.png
 wait 66
 shot site-079.png
 wait 66
-tappad 10
+tap REC
 shot site-080.png
 wait 66
 keybed 28 up
@@ -234,7 +234,7 @@ shot site-104.png
 wait 66
 shot site-105.png
 wait 66
-tappad 10
+tap REC
 shot site-106.png
 wait 66
 shot site-107.png

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  * Erik37: Copyright (C) 2026 M. Geisler (genkigenki/makkuro) */
-/* Erik37: a grand piano for the M-Vave SMK-37, on fm1-base. This header is the app's half of the contract with the
+/* Erik37: a grand piano for the M-Vave SMK-37 (and the FM-1), on fm1-base. This header is the app's half of the contract with the
  * platform (base/device/unity.c, base/host/plat_host.c). */
 #pragma once
 #include <stdint.h>
@@ -10,7 +10,7 @@
 #define APP_SPLASH_RGB RGB(201, 164, 92)
 #define APP_TAGLINE "a grand piano"
 #ifndef APP_VERSION
-#define APP_VERSION "0.1"                /* (tools/build.py --release passes its own) */
+#define APP_VERSION "1.1"                /* (tools/build.py --release passes its own) */
 #endif
 #define APP_BLOCK 256u                   /* frames per audio half: 5.8 ms; the keys are read every 64 frames */
 #define APP_CANVAS_PX (240u * 48u)       /* fm1-base's canvas (its own screens): the pool goes to Erik37's frame */
@@ -21,9 +21,13 @@ void app_splash(void);
 void app_overload(void);
 #define APP_GAIN(m) ((m) * (m) >> 12)
 
-/* the store: the settings, and the panel calibration (the platform's); the SMK-37 build puts them in its own window */
-enum { OBJ_SETTINGS, OBJ_PANEL, OBJ_NOBJ };
-#define APP_STORE_MAP {0xFC000u, 0xDC000u}
+/* the store: the settings, the panel calibration (the platform's) and the user presets; the SMK-37 build puts them
+ * in its own window (the stock VM, 0x9D000..0xAEFFF, by number: the numbers stay) */
+enum { OBJ_SETTINGS, OBJ_PANEL, OBJ_PRESETS, OBJ_NOBJ };
+#define APP_STORE_MAP {0xFC000u, 0xDC000u, 0xDE000u}
+#if !BOARD_SMK37
+#define APP_TOUCH                        /* the FM-1's keys: velocity (lib/touch.h) */
+#endif
 
 /* the contract: the platform calls these */
 void app_init(void);
@@ -35,6 +39,6 @@ void app_input_only(void);
 void app_say(const char *a, const char *b);
 
 #ifdef PLAT_HOST
-#define APP_HOST_EXPECT                  /* the host simulator's checks (tests/*.txt): page, tone, room, voices ... */
+#define APP_HOST_EXPECT                  /* the host simulator's checks (tests/ *.txt): page, tone, room, voices ... */
 int app_expect(const char *what, int *got);
 #endif

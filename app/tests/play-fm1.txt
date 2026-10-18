@@ -1,0 +1,94 @@
+# Erik37 on the FM-1 in the host simulator: its keys with velocity, the pedal buttons, the voices and the user presets
+# on ALGORITHM / PRESETS and SAVE, the pages on SELECT, the store
+#   app/build/host/erik37_host app/tests/play-fm1.txt OUTDIR
+wait 200
+expect boot 1
+tap OCT+
+wait 30
+expect boot 0
+tap OCT-
+wait 30
+expect octave 0
+# a key with its velocity (lib/touch), through the touch curve, out over USB-MIDI too
+wav fm1-key.wav
+key 7 down 110
+wait 60
+expect voices >0
+expect notes 1
+expect vel >60
+expect midi_out >0
+key 7 up
+wait 400
+wavstop
+expect peak_db_max -1
+tapkey 12 30
+wait 60
+expect notes 2
+expect vel <60
+# the pedals: REC sustain, SEL una corda, ENV sostenuto (a tap latches, held while held)
+tap REC
+wait 30
+expect sustain 127
+tap REC
+wait 30
+expect sustain 0
+press SEL
+wait 400
+expect soft 127
+release SEL
+wait 30
+expect soft 0
+tap ENV
+wait 30
+expect sost 1
+tap ENV
+wait 30
+expect sost 0
+# ALGORITHM: the four voices
+turn ALGO 1
+wait 30
+expect tone 1
+expect chosen 2
+turn ALGO 5
+wait 30
+expect tone 3
+# SELECT: the pages; KNOB 1..4 the page's knobs
+turn SELECT 1
+wait 30
+expect page 1
+turn K2 5
+wait 30
+expect brill 56
+turn SELECT -1
+wait 30
+expect page 0
+# PRESETS onto USER 3 (empty: nothing changes), SAVE held a second: the sound saved there
+turn PRESET 2
+wait 30
+expect tone 3
+press SAVE
+wait 1200
+release SAVE
+wait 30
+expect user3 1
+expect chosen 7
+# another voice, then PRESETS back onto USER 3
+turn ALGO -4
+wait 30
+expect tone 0
+turn PRESET -1
+wait 30
+turn PRESET 1
+wait 30
+expect tone 3
+expect brill 56
+# SAVE tapped: the settings
+tap SAVE
+wait 30
+expect dirty 0
+reboot
+wait 300
+expect tone 3
+expect brill 56
+expect user3 1
+expect chosen 7

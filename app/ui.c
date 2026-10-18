@@ -9,8 +9,8 @@ static const char *const TONE_NAME[4] = {"CONCERT", "STUDIO", "VINTAGE", "JAZZ"}
 static const char *const TONE_TITLE[4] = {"Concert", "Studio", "Vintage", "Jazz"};
 static const char *const ROOM_NAME[4] = {"DRY", "CHAMBER", "HALL", "CHURCH"};
 static const char *const ROOM_TITLE[4] = {"Dry", "Chamber", "Hall", "Church"};
-/* the page knobs' tags: fm1-base maps the FM-1's KNOB 1..4 to the SMK-37's K1..K4 (K5 MASTER, K6..K8 SELECT,
- * ALGORITHM, PRESETS). Should a unit show them on K5..K8, this one number changes the tags */
+/* the page knobs' tags: fm1-base maps the FM-1's KNOB 1..4 to the SMK-37's K1..K4 (K5 MASTER; K6..K8 SELECT,
+ * ALGORITHM, PRESETS have no job on the SMK-37). Should a unit show them on K5..K8, this one number changes the tags */
 #ifndef KTAG_FIRST
 #define KTAG_FIRST 1
 #endif
@@ -487,7 +487,11 @@ static void about_page(void)
     text_glow(120, 34, &F_HEAD12, "ERIK37", IVORY, 3, 'c', 1.0f, 0.12f);
     text(120, 51, &F_TEXT11, APP_VERSION, GOLD, 0, 'c', 1.0f);
     hairline(70, 170, 67, GOLD, 0.8f, 1);
+#if BOARD_SMK37
     text(120, 73, &F_ITAL11, "a grand piano for the SMK-37", IVORY_DIM, 0, 'c', 1.0f);
+#else
+    text(120, 73, &F_ITAL11, "a grand piano for the FM-1", IVORY_DIM, 0, 'c', 1.0f);
+#endif
     text(120, 86, &F_ITAL10, "by genkigenki", IVORY_DIM, 0, 'c', 1.0f);
     text(120, 104, &F_HEAD9, "THE PIANO", GOLD_DIM, 0.6f, 'c', 1.0f);
     text(120, 116, &F_TEXT11, "Salamander Grand Piano V3", IVORY, 0, 'c', 1.0f);

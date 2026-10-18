@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # Erik37: Copyright (C) 2026 M. Geisler (genkigenki/makkuro)
 """The screens against their golden images (tests/golden/): every pixel the same.
-  compare_shots.py SHOT_DIR [--update]     (--update: the shots become the goldens)"""
+  compare_shots.py SHOT_DIR [--update] [--board fm1]     (--update: the shots become the goldens)"""
 import shutil
 import sys
 from pathlib import Path
@@ -12,6 +12,7 @@ from PIL import Image, ImageChops
 GOLD = Path(__file__).resolve().parent / "golden"
 shots = Path(sys.argv[1])
 update = "--update" in sys.argv
+GOLD = GOLD / sys.argv[sys.argv.index("--board") + 1] if "--board" in sys.argv else GOLD   # golden/fm1: the FM-1's
 names = sorted(p.name for p in shots.glob("*.png") if p.name[:4] in ("boot", "play", "tone", "room", "abou"))
 bad = 0
 GOLD.mkdir(exist_ok=True)

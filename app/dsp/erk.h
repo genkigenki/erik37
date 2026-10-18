@@ -62,6 +62,7 @@ void erk_set_room(int type, int size_q15, int amount_q15);   /* size: the decay,
 void erk_set_width(int width_q15);
 void erk_set_tone(int tone, int brilliance_q15, int una_q15);   /* brilliance 0..1 (0.5 neutral); una corda depth */
 void erk_set_resonance(int level_q15);
+void erk_bend(int ratio_q16);                  /* the pitch wheel: the strings' rate ratio, Q16 (65536 none) */
 void erk_set_rel_level(int level_q15);
 void erk_set_master(int q15);
 float erk_room_seconds(int type, int size_q15);   /* the decay the screen shows */
