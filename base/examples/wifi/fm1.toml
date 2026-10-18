@@ -1,0 +1,10 @@
+# The WiFi example's build settings (tools/build.py)
+name = "WIFI"                  # APP_NAME is in app.h; this names the build's files
+id_prefix = "FM-1_12"          # package identity: dev FM-1_1200
+usb_manufacturer = "fm1-base"
+usb_product = "WIFI FM-1"
+wifi = true                    # WiFi (not with ble, yet)
+usb_audio_in = false           # (no sound to record: the RAM goes to WiFi)
+usb_audio_out = false
+net = ["net.c"]                # the network code: lwIP's sockets, built as the SDK builds code that talks lwIP
+words = "words.tsv"

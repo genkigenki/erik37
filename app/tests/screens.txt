@@ -1,0 +1,71 @@
+# Erik37's screens (the golden images: tests/golden/, compared by tests/compare_shots.py), and the site's shot:
+#   app/build/smk37/host/erik37-smk37_host app/tests/screens.txt OUTDIR
+wait 200
+shot boot-1.png
+wait 1000
+shot boot-2.png
+wait 1100
+shot boot-3.png
+wait 1100
+shot boot-4.png
+wait 1500
+shot play-idle.png
+tappad 10
+keybed 0 down 96
+keybed 7 down 84
+keybed 16 down 100
+keybed 19 down 90
+keybed 24 down 76
+wait 90
+shot play-chord.png
+keybed 0 up
+keybed 7 up
+keybed 16 up
+keybed 19 up
+keybed 24 up
+wait 700
+shot play-sustain.png
+tappad 10
+wait 1500
+tappad 8
+keybed 12 down 40
+keybed 24 down 50
+wait 60
+tappad 9
+wait 200
+shot play-una-sost.png
+keybed 12 up
+keybed 24 up
+tappad 8
+tappad 9
+wait 1500
+tap OCT+
+wait 60
+shot play-octave.png
+tap OCT-
+turn K3 4
+wait 60
+shot play-knob.png
+turn SELECT 1
+wait 1400
+turn K1 1
+wait 60
+shot tone-hard.png
+turn SELECT 1
+wait 1400
+shot room-hall.png
+turn K1 -2
+wait 60
+shot room-dry.png
+turn K1 1
+turn K2 -10
+wait 60
+shot room-chamber.png
+turn K1 2
+turn K2 25
+turn K4 10
+wait 1400
+shot room-church.png
+turn SELECT 1
+wait 1400
+shot about.png

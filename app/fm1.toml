@@ -1,0 +1,16 @@
+# Erik37's build settings (fm1-base's tools/build.py: ./build.sh)
+name = "ERIK37"                # the build's files: erik37-smk37.fwsc
+id_prefix = "FM-1_48"          # package identity family _48x: FM-1 builds FM-1_4800
+smk_id_prefix = "4801"         # the SMK-37: SMK-37 Pro_480100 (0.1; four digits keep the Elite's name within 20)
+usb_manufacturer = "erik37"
+usb_product = "ERIK37"
+words = "words.tsv"
+ble = false
+o2 = ["dsp/erk.c"]             # the piano engine at -O2 (the unity build is -Os)
+device_include = ["dsp/compat"]   # <string.h> for the engine unit: the toolchain has no C library headers
+gen = ["tools/gen_assets.py {gen}"]
+# the site (fm1-base tools/make_site.py, tools/publish_site.sh)
+tagline = "a grand piano for the SMK-37"
+repo = "https://github.com/genkigenki/erik37"
+licence = "MPL-2.0"
+credits = "Built on fm1-base and felucca-bsp. The piano is the Salamander Grand Piano V3 by Alexander Holm (CC BY 3.0)."

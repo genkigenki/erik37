@@ -1,0 +1,161 @@
+# Erik37 in the host simulator: the controls, the pedals, the pages, the store, the sound
+#   app/build/smk37/host/erik37-smk37_host app/tests/play.txt OUTDIR
+wait 200
+expect boot 1
+tap OCT+
+wait 30
+expect boot 0
+tap OCT-
+wait 30
+expect octave 0
+# a key with its velocity: through the Normal touch curve, out over USB-MIDI too
+wav chord.wav
+keybed 12 down 100
+wait 40
+expect vel >80
+expect voices >0
+expect midi_out >0
+keybed 12 up
+wait 400
+wavstop
+expect peak_db_min -40
+expect peak_db_max -1
+# the sustain pad: a tap latches it, the next lets go; held, it is down while held
+tappad 10
+wait 30
+expect sustain 127
+expect pad10 0xFFBE6E
+tappad 10
+wait 30
+expect sustain 0
+expect pad10 0x483622
+pad 10 down
+wait 400
+expect sustain 127
+expect pad10 0xFF8C10
+pad 10 up
+wait 30
+expect sustain 0
+# SEQ REC: the sustain pedal too (held: while held; a tap latches it, the next tap lets go)
+press REC
+wait 400
+expect sustain 127
+release REC
+wait 30
+expect sustain 0
+tap REC
+wait 30
+expect sustain 127
+tap REC
+wait 30
+expect sustain 0
+# the PEDAL jack: away from its rest reading, the pedal is down (half way: half pedal)
+pedal 300
+wait 30
+expect sustain 127
+pedal 760
+wait 30
+expect sustain >20
+expect sustain <127
+pedal 1023
+wait 30
+expect sustain 0
+# the mod wheel: a sustain pedal with half pedal
+wheel mod 127
+wait 30
+expect sustain 127
+wheel mod 0
+wait 30
+expect sustain 0
+# sostenuto and una corda pads
+tappad 9
+wait 30
+expect sost 1
+tappad 9
+wait 30
+expect sost 0
+tappad 8
+wait 30
+expect soft 127
+tappad 8
+wait 30
+expect soft 0
+# the tone and room pads, the brilliance steps, resonance, metronome
+tappad 2
+wait 30
+expect tone 2
+expect pad2 0xFFBE6E
+tappad 4
+wait 30
+expect room 0
+tappad 7
+wait 30
+expect room 3
+tappad 12
+wait 30
+expect brill 25
+tappad 11
+wait 30
+expect reso_on 0
+tappad 11
+wait 30
+expect reso_on 1
+tappad 15
+wait 30
+expect metro 1
+pad 15 down
+wait 30
+turn K1 4
+wait 30
+pad 15 up
+wait 30
+expect metro 1
+expect bpm 104
+tappad 15
+wait 30
+expect metro 0
+# K7 ALGORITHM: the tone, K8 PRESETS: the room, K6 SELECT: the pages
+turn ALGO -2
+wait 30
+expect tone 0
+turn PRESET -1
+wait 30
+expect room 2
+turn SELECT 1
+wait 30
+expect page 1
+turn K1 1
+wait 30
+expect curve 2
+turn SELECT 1
+wait 30
+expect page 2
+tap HOME
+wait 30
+expect page 0
+# the faders: the page's knobs, once moved
+fader 2 0
+wait 30
+fader 2 127
+wait 30
+expect dirty 1
+# saved by itself once the piano is quiet
+wait 2600
+expect dirty 0
+expect store_writes >0
+reboot
+wait 300
+expect tone 0
+expect curve 2
+expect room 2
+# MIDI in plays it (and the sustain pedal by CC 64)
+midi 90 3C 64
+wait 30
+expect voices >0
+midi B0 40 7F
+wait 30
+expect sustain 127
+midi B0 40 00
+midi 80 3C 00
+wait 30
+expect sustain 0

@@ -1,0 +1,8 @@
+samples-src/
+build/
+demos/*.wav
+app/build/
+app/web/
+*.o
+*.exe
+__pycache__/
