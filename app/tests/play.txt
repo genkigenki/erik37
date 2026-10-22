@@ -21,18 +21,28 @@ wait 400
 wavstop
 expect peak_db_min -40
 expect peak_db_max -1
-# SEQ REC: the sustain pedal (held: while held; a tap latches it, the next tap lets go), its light on
+# SEQ REC: the sustain, a toggle (each press on or off, held or not), its light on while on
+expect sustain 0
+expect lit_rec 0
 press REC
 wait 400
 expect sustain 127
+expect lit_rec 1
 release REC
-wait 30
-expect sustain 0
-tap REC
 wait 30
 expect sustain 127
 tap REC
+wait 200
+expect sustain 0
+expect lit_rec 0
+# ... a press is taken once: a bounce within 180 ms is not a second press
+tap REC
 wait 30
+tap REC
+wait 200
+expect sustain 127
+tap REC
+wait 200
 expect sustain 0
 # SCALE: una corda, CHORD: sostenuto (the same: a tap latches, held while held)
 tap SEL
@@ -53,7 +63,10 @@ expect sost 1
 tap ENV
 wait 30
 expect sost 0
-# the PEDAL jack: away from its rest reading, the pedal is down (half way: half pedal)
+# the PEDAL jack: away from its rest reading, the pedal is down (half way: half pedal); auto learnt the rest (the
+# open jack, 1023) once it was steady
+expect jack_mode 0
+expect jack_learnt 1
 pedal 300
 wait 30
 expect sustain 127
@@ -64,7 +77,63 @@ expect sustain <127
 pedal 1023
 wait 30
 expect sustain 0
-# the mod wheel: the sustain pedal with half pedal; at rest and a little above exactly off
+# the mod wheel: off by default (a wheel left up held every note in 1.1)
+wheel mod 127
+wait 30
+expect sustain 0
+wheel mod 0
+wait 30
+# PEDALS & PADS (page III): K2 the mod wheel as sustain, K3 the jack, K4 the pad light
+tap RIGHT
+tap RIGHT
+tap RIGHT
+wait 30
+expect page 3
+turn K2 1
+wait 30
+expect wheel_sus 1
+# the jack fixed: open at rest (most pedals), closed at rest
+turn K3 1
+wait 30
+expect jack_mode 1
+pedal 100
+wait 30
+expect sustain 127
+pedal 1023
+wait 30
+expect sustain 0
+turn K3 1
+wait 30
+expect jack_mode 2
+expect sustain 127
+pedal 0
+wait 30
+expect sustain 0
+# back to auto: learnt again; a reading in the middle (no pedal, a floating input) is never taken
+pedal 512
+turn K3 -2
+wait 400
+expect jack_mode 0
+expect jack_learnt 0
+expect sustain 0
+pedal 1023
+wait 400
+expect jack_learnt 1
+expect sustain 0
+# the pad light: 4 steps; the dim levels keep a floor (each level visible, apart from the next)
+turn K4 -5
+wait 30
+expect padlight 0
+expect pad0 0x733F07
+expect pad2 0x382205
+expect pad4 0x1A140C
+turn K4 5
+wait 30
+expect padlight 3
+tap HOME
+wait 30
+expect page 0
+# the mod wheel (now on): the sustain pedal with half pedal; at rest and a little above exactly off
 wheel mod 127
 wait 30
 expect sustain 127
@@ -82,10 +151,10 @@ expect sustain 0
 wheel mod 64
 wait 30
 tap REC
-wait 30
+wait 200
 expect sustain 127
 tap REC
-wait 30
+wait 200
 expect sustain <80
 wheel mod 0
 wait 30
@@ -129,9 +198,9 @@ tappad 0
 wait 200
 expect tone 0
 expect room 2
-# pads 5-16: the user presets, all empty (dark); a short press on an empty one changes nothing
-expect pad4 0x000000
-expect pad15 0x000000
+# pads 5-16: the user presets, all empty (pale); a short press on an empty one changes nothing
+expect pad4 0x241B11
+expect pad15 0x241B11
 tappad 4
 wait 200
 expect tone 0
@@ -165,7 +234,7 @@ tappad 0
 wait 200
 expect tone 0
 expect curve 2
-expect pad4 0x483622
+expect pad4 0x58422A
 tappad 4
 wait 200
 expect tone 1
@@ -199,6 +268,18 @@ expect metro 1
 tap PLAY
 wait 30
 expect metro 0
+# TONE & TOUCH's K4: the release noise, 0 (off) .. 100 in fives, 40 at first
+tap RIGHT
+wait 30
+expect relnoise 40
+turn K4 -20
+wait 30
+expect relnoise 0
+turn K4 7
+wait 30
+expect relnoise 35
+tap HOME
+wait 30
 # TONE & TOUCH's K3: resonance, turned down past 0 off, turned up on again
 tap RIGHT
 wait 30
@@ -223,6 +304,8 @@ expect dirty 0
 expect store_writes >0
 reboot
 wait 300
+expect relnoise 35
+expect wheel_sus 1
 expect tone 1
 expect curve 2
 expect room 1
@@ -240,3 +323,17 @@ midi B0 40 00
 midi 80 3C 00
 wait 30
 expect sustain 0
+# a note the keys hold, echoed back by the computer (MIDI thru), is not struck again
+wait 3000
+expect voices 0
+keybed 12 down 100
+wait 40
+expect voices 1
+midi 90 3C 64
+wait 40
+expect voices 1
+midi 80 3C 00
+wait 40
+expect voices 1
+keybed 12 up
+wait 40

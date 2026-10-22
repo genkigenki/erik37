@@ -1,14 +1,21 @@
 /* SPDX-License-Identifier: MPL-2.0
  * Erik37: Copyright (C) 2026 M. Geisler (genkigenki/makkuro) */
 /* The screens (design/DESIGN.md, drawn as design/screens.py and pages.py draw them): the play screen (a view into
- * the piano: strings, dampers, keys, the pedals), TONE & TOUCH (page I) and ROOM (page II), with the header on top
- * and the knob strip at the bottom. Each draws from the state in app.c; what moves is redrawn by row bands. Part of
+ * the piano: strings, dampers, keys, the pedals), TONE & TOUCH (page I), ROOM (page II) and PEDALS & PADS (page
+ * III), with the header on top and the knob strip at the bottom. Each draws from the state in app.c; what moves is redrawn by row bands. Part of
  * the app's unity build (app.c), after draw.c. */
 
 static const char *const TONE_NAME[4] = {"CONCERT", "STUDIO", "VINTAGE", "JAZZ"};
 static const char *const TONE_TITLE[4] = {"Concert", "Studio", "Vintage", "Jazz"};
 static const char *const ROOM_NAME[4] = {"DRY", "CHAMBER", "HALL", "CHURCH"};
 static const char *const ROOM_TITLE[4] = {"Dry", "Chamber", "Hall", "Church"};
+static const char *const JACK_NAME[3] = {"auto", "open", "closed"};   /* the PEDAL jack: learnt, or the pedal at rest */
+static const uint8_t PADL_PCT[4] = {45, 60, 80, 100};                /* the pad light: the chosen pad's brightness */
+#if BOARD_SMK37
+#define SETUP_TITLE "PEDALS & PADS"
+#else
+#define SETUP_TITLE "PEDALS"
+#endif
 /* the page knobs' tags: fm1-base maps the FM-1's KNOB 1..4 to the SMK-37's K1..K4 (K5 MASTER; K6..K8 SELECT,
  * ALGORITHM, PRESETS have no job on the SMK-37). Should a unit show them on K5..K8, this one number changes the tags */
 #ifndef KTAG_FIRST
@@ -63,7 +70,10 @@ static void knob_strip(const knob_t *k, int active)
         float cx = x0 + COL_W / 2.0f, bx0 = x0 + 22, bx1 = x0 + COL_W - 7;
         char tag[3] = {'K', (char)('0' + KTAG_FIRST + i), 0};
         const erk_font *fv = twidth(&F_TEXT13, k[i].value, 0) <= 50 ? &F_TEXT13 : &F_TEXT12;
-        text(cx, STRIP_Y + 5, &F_ITAL11, k[i].label, hot ? GOLD_HI : IVORY_DIM, 0, 'c', 1.0f);
+        if (!k[i].label)                      /* (no knob here) */
+            continue;
+        text(cx, STRIP_Y + 5, twidth(&F_ITAL11, k[i].label, 0) <= 54 ? &F_ITAL11 : &F_ITAL10, k[i].label,
+             hot ? GOLD_HI : IVORY_DIM, 0, 'c', 1.0f);
         text(cx, STRIP_Y + 20, fv, k[i].value, IVORY, 0, 'c', 1.0f);
         text(x0 + 6, by - 5, &F_HEAD9, tag, hot ? GOLD : GOLD_DIM, 0, 'l', 1.0f);
         if (k[i].amt < 0) {                   /* a choice: n small lozenges, the current gold */
@@ -477,6 +487,80 @@ static void room_page(int room, float size, float amount, float width)
     }
     itoa_s((int)(width * 100 + 0.5f), t);
     cat_s(cap, t);
+    text(120, 166, &F_ITAL11, cap, IVORY_DIM, 0, 'c', 1.0f);
+}
+
+/* ---------------------------------------------------------------- PEDALS & PADS */
+
+/* what the page shows live: the pedals, the jack, the pads (redrawn when it changes) */
+static uint32_t setup_live(void)
+{
+    uint32_t h = (uint32_t)(erk_sus_q15 >> 12) | (uint32_t)au.sost_now << 4 | (uint32_t)(erk_soft_q15 >> 12) << 5 |
+                 (uint32_t)(au.sus_jack > 0) << 9 | (uint32_t)au.jack_init << 10;
+    int p;
+    for (p = 0; p < 16; p++)
+        h = h * 31u + ui.pad_rgb[p];
+    return h;
+}
+
+static void big_pedal(float x, float y, float amt, const char *name)
+{
+    float p[40];
+    int dy = (int)(3 * amt + 0.5f), n;
+    rgb_t c = mixc(GOLD_DIM, GOLD_HI, amt);
+    n = rrect_pts(p, x - 11 + 0.5f, y + dy + 0.5f, x + 11 + 0.5f, y + dy + 8 + 0.5f, 3.5f);
+    if (amt > 0.01f) {
+        mask_clear((int)x - 22, (int)y - 10, (int)x + 23, (int)y + 22);
+        mask_poly(p, n);
+        mask_glow(3.0f, GOLD, 0.6f * amt);
+    }
+    mask_clear((int)x - 13, (int)y - 2, (int)x + 14, (int)y + 14);
+    mask_poly(p, n);
+    mask_fill(c, 1.0f);
+    text(x, y + 16, &F_ITAL10, name, amt > 0.5f ? IVORY : IVORY_DIM, 0, 'c', 1.0f);
+}
+
+static void setup_page(void)
+{
+    char cap[64], t[8];
+    float sus = erk_sus_q15 / 32767.0f, una = erk_soft_q15 / 32767.0f;
+    text(120, 32, &F_HEAD9, "PEDALS", GOLD_DIM, 0.6f, 'c', 1.0f);
+    big_pedal(52, 50, una, "una corda");
+    big_pedal(120, 50, au.sost_now ? 1.0f : 0.0f, "sostenuto");
+    big_pedal(188, 50, sus, "sustain");
+    cap[0] = 0;
+#if BOARD_SMK37
+    cat_s(cap, "jack ");
+    cat_s(cap, JACK_NAME[JACK_MODE()]);
+    cat_s(cap, ": ");
+    cat_s(cap, JACK_MODE() == 0 && !au.jack_init ? "waiting" : au.sus_jack > 0 ? "down" : "up");
+    cat_s(cap, "  \x7f  wheel ");
+    cat_s(cap, (set.flags & SF_WHEEL) ? "sustain" : "off");
+    text(120, 86, &F_ITAL11, cap, IVORY_DIM, 0, 'c', 1.0f);
+    hairline(70, 170, 104, GOLD, 0.5f, 1);
+    text(120, 112, &F_HEAD9, "PADS", GOLD_DIM, 0.6f, 'c', 1.0f);
+    {   /* the pads as lit now: the voices, the user presets (empty, filled, chosen) */
+        int p;
+        for (p = 0; p < 16; p++) {
+            int x0 = 19 + (p & 7) * 26, y0 = 128 + (p >> 3) * 18;
+            uint32_t c = ui.pad_rgb[p];
+            rect(x0, y0, x0 + 20, y0 + 13, C3((uint8_t)(c >> 16), (uint8_t)(c >> 8), (uint8_t)c), 256);
+            hline(x0, x0 + 20, y0, GOLD_DEEP, 0.9f, 0);
+            hline(x0, x0 + 20, y0 + 13, GOLD_DEEP, 0.9f, 0);
+            vline(x0, y0, y0 + 14, GOLD_DEEP, 0.9f, 0);
+            vline(x0 + 20, y0, y0 + 14, GOLD_DEEP, 0.9f, 0);
+        }
+    }
+    cap[0] = 0;
+    cat_s(cap, "pad light ");
+    itoa_s(PADL_PCT[set.padlight], t);
+    cat_s(cap, t);
+    cat_s(cap, " %  \x7f  voices, presets");
+#else
+    cat_s(cap, "una corda depth ");
+    itoa_s(set.una, t);
+    cat_s(cap, t);
+#endif
     text(120, 166, &F_ITAL11, cap, IVORY_DIM, 0, 'c', 1.0f);
 }
 

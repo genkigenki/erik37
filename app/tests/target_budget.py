@@ -6,8 +6,11 @@ instructions (a backward branch closes each), as the repo's other budgets count 
 
   target_budget.py DIS [--voices N] [--xf N] [--limit PCT] [--report OUT.json]
 
-  a voice     stream_run's loop (the interpolation) + stream_decode's loop x R (source samples an output sample, R
-              0.70: 22.05 / 28 / 32 kHz zones up to 3 semitones up) + voice_out's loop + the block's upkeep / 32
+  a voice     stream_run's loop (the interpolation) + stream_decode x R (source samples an output sample, R
+              0.70: 22.05 / 28 / 32 kHz zones up to 3 semitones up) + voice_out's loop + the block's upkeep / 32.
+              stream_decode decodes in runs (1.2): its inner loop (two source samples an iteration) every two, the
+              rest of its outer loop (the block header, the loop's end, an odd sample at a run's ends) once a run,
+              R + 1 runs a call of 32 R source samples
   two layers  a second stream (the attack's first 0.3 s, at most --xf notes at once)
   the bus     the reverb (8-line FDN, every 2nd sample), the resonance (12 combs, every 4th), the tone EQ (both
               channels), the mix and the output, the block's upkeep / 32, the keys' poll
@@ -58,7 +61,11 @@ def main():
     nv, nx, limit = arg("--voices", 20), arg("--xf", 6), arg("--limit", 75.0)
     f = functions(dis)
     one = lambda fn: loops(f[fn])[-1][2]                    # a function's (outermost) loop
-    run, dec, out = one("stream_run"), one("stream_decode"), one("voice_out")
+    run, out = one("stream_run"), one("voice_out")
+    dl = loops(f["stream_decode"])
+    dec_in, dec_out = dl[0][2], dl[-1][2]
+    decf = lambda r: dec_in / 2 + (dec_out - dec_in) * (r + 1) / (32 * r)   # a source sample, R + 1 runs a call
+    dec = round(decf(R), 1)
     rl = loops(f["res_block"])
     res = (rl[-1][2] - rl[0][2] + 12 * rl[0][2]) / 4.0      # outer once, the inner 12 times, every 4th sample
     rev = loops(f["rev_block"])[-1][2] / 2.0
@@ -75,13 +82,14 @@ def main():
     poll = loops(f["app_render"])[-1][2] / 64.0              # the keys / MIDI / pedals, every 64 frames (no key new)
     V = run + dec * R + out + upkeep
     V2 = V + run + dec * R
-    VN = run + dec * 0.5 + out + upkeep                     # a release noise (22.05 kHz)
+    VN = run + decf(0.5) * 0.5 + out + upkeep               # a release noise (22.05 kHz)
     B = res + rev + eq + mix + block / 32.0 + poll
-    rep = {"instr": {"stream_run": run, "stream_decode": dec, "voice_out": out, "voice_upkeep": round(upkeep, 1),
+    rep = {"instr": {"stream_run": run, "stream_decode": dec, "stream_decode_loops": [dec_in, dec_out], "voice_out": out, "voice_upkeep": round(upkeep, 1),
                      "voice": round(V, 1), "voice_two_layers": round(V2, 1), "resonance": res, "reverb": rev, "eq": eq,
                      "mix_out": mix, "block": round(block / 32.0, 1), "poll": round(poll, 1), "bus": round(B, 1)}}
     print(f"erik37 cpu budget (pi32v2, {a[0].split('/')[-1]}), instructions a 44.1 kHz sample:")
-    print(f"  a voice {V:.0f} (interpolation {run}, decode {dec} x {R}, filter/pan {out}, upkeep {upkeep:.0f}); "
+    print(f"  a voice {V:.0f} (interpolation {run}, decode {dec} x {R} (its loops {dec_in} / {dec_out}), "
+          f"filter/pan {out}, upkeep {upkeep:.0f}); "
           f"two layers {V2:.0f}")
     print(f"  the bus {B:.0f}: reverb {rev:.0f}, resonance {res:.0f}, EQ {eq:.0f}, mix/out {mix}, block {block / 32:.0f}, "
           f"keys {poll:.0f}")
@@ -103,8 +111,8 @@ def main():
     rep["table"] = rows
     # the pitch wheel all the way up (+2 semitones): every stream decodes 2^(2/12) as many source samples
     Rb = R * 2 ** (2 / 12)
-    Vb = run + dec * Rb + out + upkeep
-    worst_b = B + nv * Vb + min(nv, nx) * (run + dec * Rb) + 4 * Vb + 4 * VN
+    Vb = run + decf(Rb) * Rb + out + upkeep
+    worst_b = B + nv * Vb + min(nv, nx) * (run + decf(Rb) * Rb) + 4 * Vb + 4 * VN
     wb = round(worst_b * CPI / (320e6 / FS) * 100, 1)
     rep["worst_320_bent_up"] = wb
     print(f"  {nv} voices, the pitch wheel all the way up: worst {wb:5.1f} % at 320 MHz")

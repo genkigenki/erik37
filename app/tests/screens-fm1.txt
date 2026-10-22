@@ -16,4 +16,7 @@ shot play-fm1-user.png
 wait 1400
 turn SELECT 3
 wait 1400
+shot setup-fm1.png
+turn SELECT 1
+wait 1400
 shot about-fm1.png

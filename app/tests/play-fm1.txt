@@ -25,12 +25,12 @@ tapkey 12 30
 wait 60
 expect notes 2
 expect vel <60
-# the pedals: REC sustain, SEL una corda, ENV sostenuto (a tap latches, held while held)
+# the pedals: REC sustain (a toggle), SEL una corda, ENV sostenuto (a tap latches, held while held)
 tap REC
-wait 30
+wait 200
 expect sustain 127
 tap REC
-wait 30
+wait 200
 expect sustain 0
 press SEL
 wait 400

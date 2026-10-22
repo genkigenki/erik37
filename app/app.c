@@ -10,7 +10,8 @@
 #include "draw.c"
 
 /* ---------------------------------------------------------------- settings */
-#define SET_MAGIC 0x314B5245u            /* "ERK1" */
+#define SET_MAGIC 0x324B5245u            /* "ERK2" (1.2: the release noise, the pad light, the wheel and the jack) */
+#define SET_MAGIC1 0x314B5245u           /* "ERK1": 1.0 / 1.1, the same size: kept, the new ones at their defaults */
 typedef struct {
     uint32_t magic;
     uint8_t tone, room, curve, una;      /* tone 0..3, room 0..3 (dry, chamber, hall, church), touch 0..3, una 0..100 */
@@ -18,8 +19,15 @@ typedef struct {
     uint8_t reso, reso_on, bpm, pad;     /* resonance 0..100; the metronome's tempo (bpm); the voice or preset chosen
                                           * last (1..16 as the pads, 0 none) */
     int8_t octave;                       /* -2 .. +2 */
-    uint8_t rsv2[3];
+    uint8_t relnoise;                    /* the release (damper) noise, 0 (off) .. 100 (1.1's level) */
+    uint8_t padlight;                    /* the pads' brightness, 0..3 (PADL_PCT) */
+    uint8_t flags;                       /* SF_WHEEL: the mod wheel holds notes; the PEDAL jack (SF_JACK_SH): 0 auto,
+                                          * 1 open at rest, 2 closed at rest */
 } settings_t;
+#define SF_WHEEL 1u
+#define SF_JACK_SH 1
+#define JACK_MODE() ((set.flags >> SF_JACK_SH) & 3u)
+#define RELNOISE_DEF 40                  /* 1.1 had 100 (-8 dB now) */
 static settings_t set;
 static uint8_t set_dirty;
 static uint32_t set_changed_at;
@@ -41,13 +49,31 @@ static void settings_defaults(void)
     set.bpm = 96;
     set.pad = 1;
     set.octave = 0;
+    set.relnoise = RELNOISE_DEF;
+    set.padlight = 3;
+    set.flags = 0;                       /* only the pedal holds notes (the mod wheel not); the jack learnt */
 }
 
 static int settings_ok(void)
 {
     return set.magic == SET_MAGIC && set.tone < 4 && set.room < 4 && set.curve < 4 && set.una <= 100 &&
            set.size <= 100 && set.amount <= 100 && set.width <= 100 && set.brill <= 100 && set.reso <= 100 &&
-           set.reso_on <= 1 && set.bpm >= 30 && set.bpm <= 240 && set.octave >= -2 && set.octave <= 2 && set.pad <= 16;
+           set.reso_on <= 1 && set.bpm >= 30 && set.bpm <= 240 && set.octave >= -2 && set.octave <= 2 && set.pad <= 16 &&
+           set.relnoise <= 100 && set.padlight <= 3 && set.flags <= (SF_WHEEL | 2u << SF_JACK_SH);
+}
+
+static void settings_load(void)
+{
+    if (plat_store_load(OBJ_SETTINGS, &set, sizeof set) != (int)sizeof set)
+        set.magic = 0;
+    if (set.magic == SET_MAGIC1) {           /* 1.1's: its sound and choices, the new settings at their defaults */
+        set.magic = SET_MAGIC;
+        set.relnoise = RELNOISE_DEF;
+        set.padlight = 3;
+        set.flags = 0;
+    }
+    if (!settings_ok())
+        settings_defaults();
 }
 
 /* ---------------------------------------------------------------- the voices and the user presets */
@@ -66,7 +92,8 @@ static const struct {
 #define SLOT_PAD0 4                      /* pad 5 (index 4) is USER 1 */
 #define SLOT_MAGIC 0x31505245u           /* "ERP1" */
 typedef struct {
-    uint8_t used, tone, room, curve, una, size, amount, width, brill, reso, reso_on, rsv;
+    uint8_t used, tone, room, curve, una, size, amount, width, brill, reso, reso_on, rel1;   /* rel1: the release
+                                          * noise + 1 (0: saved by 1.1, which had none: the current one stays) */
 } slot_t;
 static struct {
     uint32_t magic;
@@ -82,7 +109,7 @@ static int slots_ok(void)
         const slot_t *p = &slots.s[i];
         if (p->used > 1 || (p->used && (p->tone > 3 || p->room > 3 || p->curve > 3 || p->una > 100 || p->size > 100 ||
                                         p->amount > 100 || p->width > 100 || p->brill > 100 || p->reso > 100 ||
-                                        p->reso_on > 1)))
+                                        p->reso_on > 1 || p->rel1 > 101)))
             return 0;
     }
     return 1;
@@ -109,6 +136,7 @@ static void touch_build(void)
 }
 
 static int q15_of(int pct) { return pct * 32767 / 100; }
+#define REL_FULL 9000                    /* the release noise at 100: 1.1's level (Q15) */
 
 static void apply_settings(void)
 {
@@ -117,6 +145,7 @@ static void apply_settings(void)
     erk_set_room(set.room, q15_of(set.size), set.amount * 20000 / 100);
     erk_set_width(q15_of(set.width));
     erk_set_resonance(set.reso_on ? set.reso * 2600 / 100 : 0);
+    erk_set_rel_level(set.relnoise * REL_FULL / 100);
 }
 
 static void changed(void)
@@ -127,7 +156,7 @@ static void changed(void)
 }
 
 /* ---------------------------------------------------------------- the main loop -> the audio interrupt */
-enum { EV_SUS_PAD, EV_SOST, EV_SOFT, EV_ALL_OFF, EV_METRO, EV_NOTE_ON, EV_NOTE_OFF };
+enum { EV_SUS_PAD, EV_SOST, EV_SOFT, EV_ALL_OFF, EV_METRO, EV_NOTE_ON, EV_NOTE_OFF, EV_JACK_LEARN };
 #define EVQ 64u
 static volatile uint32_t evq[EVQ];
 static volatile uint32_t evq_w, evq_r;
@@ -147,9 +176,10 @@ static struct {
     uint8_t key_note[SMK_NKEYBED];       /* the MIDI note each keybed key started (the octave may change while held) */
 #endif
     uint64_t held;                       /* keybed keys down, as the render saw them */
+    uint32_t kb_note[4];                 /* the MIDI notes the keybed holds (an echo from the computer is ignored) */
     int sus_pad, sus_jack, sus_midi, sus_wheel, sus_now;   /* 0..127 each; the pedal is the strongest */
     int sost_pad, sost_midi, soft_pad, soft_midi, sost_now, soft_now;
-    int jack_rest, jack_init;
+    int jack_rest, jack_init, jack_cand, jack_n;   /* the PEDAL jack: its rest reading (auto: learnt once steady) */
     int metro_on;
     int bend, bend_sent;                 /* the pitch wheel, -127..127; what went out over MIDI */
     uint32_t metro_acc, metro_beat;
@@ -201,7 +231,10 @@ static void bend_set(int v, int full, int send)
     r = 65536 + l + ((l * l) >> 17) + (((l * l) >> 16) * l) / 393216;
     erk_bend(v ? (int)r : 65536);
     au.bend = v * 127 / full;
-    if (send && au.bend != au.bend_sent) {    /* out over USB-MIDI as pitch bend, 14 bits */
+    /* out over USB-MIDI as pitch bend, 14 bits: on a change of 2 steps or more (and at rest and the ends), so that
+     * a wheel held off centre (its reading jitters) does not stream bends to the computer */
+    if (send && au.bend != au.bend_sent &&
+        (au.bend - au.bend_sent >= 2 || au.bend_sent - au.bend >= 2 || au.bend == 0 || au.bend == 127 || au.bend == -127)) {
         uint32_t b = (uint32_t)(8192 + au.bend * 8191 / 127);
         au.bend_sent = au.bend;
         midi_out(0xE0u, b & 0x7Fu, b >> 7);
@@ -224,6 +257,45 @@ static int wheel_sustain(int32_t mw)
 }
 #endif
 
+#if BOARD_SMK37
+/* the PEDAL jack, pressed = away from its rest reading; a continuous pedal gives half pedal. Auto: the rest is learnt
+ * once the reading has been steady for JACK_STEADY polls (~0.2 s) near either end (1.1 took the very first reading:
+ * taken before the scan had read the jack, it held the sustain down for good); a reading in the middle (no jack, a
+ * floating input) is never taken. Or fixed: open at rest (most pedals) or closed at rest */
+#define JACK_STEADY 128
+static void jack_poll(void)
+{
+    int raw = plat_pedal_raw(), d, mode = (int)JACK_MODE();
+    if (raw < 0) {
+        au.sus_jack = 0;
+        return;
+    }
+    if (mode == 1) {
+        d = 1023 - raw;
+    } else if (mode == 2) {
+        d = raw;
+    } else if (!au.jack_init) {
+        d = raw - au.jack_cand;
+        if (d < -24 || d > 24) {
+            au.jack_cand = raw;
+            au.jack_n = 0;
+        } else if (++au.jack_n >= JACK_STEADY && (au.jack_cand < 200 || au.jack_cand > 823)) {
+            au.jack_rest = au.jack_cand;
+            au.jack_init = 1;
+        }
+        au.sus_jack = 0;
+        return;
+    } else {
+        d = raw - au.jack_rest;
+        d = d < 0 ? -d : d;
+        if (d < 40)
+            au.jack_rest += (raw - au.jack_rest) / 32;   /* the rest drifts slowly */
+    }
+    d = (d - 80) * 127 / 500;
+    au.sus_jack = d < 0 ? 0 : d > 127 ? 127 : d;
+}
+#endif
+
 static void keybed_poll(void)
 {
 #if BOARD_SMK37
@@ -232,6 +304,7 @@ static void keybed_poll(void)
     for (k = 0; (hits | off) && k < SMK_NKEYBED; k++) {   /* (nothing new: no loop) */
         uint64_t b = (uint64_t)1u << k;
         if ((off & b) || ((hits & b) && (au.held & b))) {   /* released (or struck again before we saw it go) */
+            au.kb_note[au.key_note[k] >> 5] &= ~(1u << (au.key_note[k] & 31));
             erk_note_off(au.key_note[k]);
             midi_out(0x80u, au.key_note[k], 0u);
         }
@@ -240,37 +313,25 @@ static void keybed_poll(void)
             if (note < 21 || note > 108)
                 continue;
             au.key_note[k] = (uint8_t)note;
+            au.kb_note[note >> 5] |= 1u << (note & 31);
             erk_note_on(note, v);
             midi_out(0x90u, (uint32_t)note, (uint32_t)v);
             au.last_vel = (uint32_t)v;
             au.notes++;
             if (!(now & b)) {                 /* a tap already over */
+                au.kb_note[note >> 5] &= ~(1u << (note & 31));
                 erk_note_off(note);
                 midi_out(0x80u, (uint32_t)note, 0u);
             }
         }
     }
     au.held = now;
-    {   /* the PEDAL jack: its rest reading learnt (either polarity), pressed = away from it; a continuous pedal
-         * gives half pedal */
-        int raw = plat_pedal_raw(), d;
-        if (raw >= 0) {
-            if (!au.jack_init) {
-                au.jack_rest = raw;
-                au.jack_init = 1;
-            }
-            d = raw - au.jack_rest;
-            d = d < 0 ? -d : d;
-            if (d < 40)
-                au.jack_rest += (raw - au.jack_rest) / 32;   /* the rest drifts slowly */
-            d = (d - 80) * 127 / 500;
-            au.sus_jack = d < 0 ? 0 : d > 127 ? 127 : d;
-        }
-    }
+    jack_poll();
     {
         int32_t pw, mw;
         if (plat_wheels(&pw, &mw)) {
-            au.sus_wheel = wheel_sustain(mw);
+            au.sus_wheel = (set.flags & SF_WHEEL) ? wheel_sustain(mw) : 0;   /* (off by default: a wheel left up
+                                                                               * held every note) */
             bend_set(pw < -PITCH_DEAD ? (int)pw + PITCH_DEAD : pw > PITCH_DEAD ? (int)pw - PITCH_DEAD : 0,
                      127 - PITCH_DEAD, 1);
         }
@@ -284,6 +345,9 @@ static void midi_poll(void)
     int port;
     while (plat_midi_in(&pkt, &port)) {
         uint32_t st = (pkt >> 8) & 0xFFu, d1 = (pkt >> 16) & 0x7Fu, d2 = (pkt >> 24) & 0x7Fu;
+        if (((st & 0xF0u) == 0x90u || (st & 0xF0u) == 0x80u) && (au.kb_note[d1 >> 5] >> (d1 & 31) & 1u))
+            continue;                         /* a note the keys hold: the computer echoing it back (MIDI thru) would
+                                               * strike the string twice */
         if ((st & 0xF0u) == 0x90u && d2) {
             erk_note_on((int)d1, touch((int)d2));
             au.last_vel = d2;
@@ -316,6 +380,10 @@ static void events_poll(void)
         case EV_ALL_OFF: erk_all_off(); break;
         case EV_NOTE_ON: erk_note_on((int)(v & 0xFFu), (int)(v >> 8 & 0xFFu)); break;
         case EV_NOTE_OFF: erk_note_off((int)v); break;
+        case EV_JACK_LEARN:
+            au.jack_init = 0;
+            au.jack_n = 0;
+            break;
         case EV_METRO:
             au.metro_on = (int)v;
             au.metro_acc = 0xFFFFFFFFu;       /* the first tick at once */
@@ -355,8 +423,7 @@ static erk_bank bank;
 
 void app_init(void)
 {
-    if (plat_store_load(OBJ_SETTINGS, &set, sizeof set) != (int)sizeof set || !settings_ok())
-        settings_defaults();
+    settings_load();
     if (plat_store_load(OBJ_PRESETS, &slots, sizeof slots) != (int)sizeof slots || !slots_ok()) {
         memset(&slots, 0, sizeof slots);
         slots.magic = SLOT_MAGIC;
@@ -367,7 +434,7 @@ void app_init(void)
 }
 
 /* ---------------------------------------------------------------- the UI */
-enum { PG_PLAY, PG_TONE, PG_ROOM, PG_ABOUT, NPAGES };
+enum { PG_PLAY, PG_TONE, PG_ROOM, PG_SETUP, PG_ABOUT, NPAGES };
 enum { ST_BOOT, ST_RUN };
 enum { PD_SOFT, PD_SOST, PD_SUS, NPD };      /* the pedal buttons: SCALE, CHORD, SEQ REC (FM-1: SEL, ENV, REC) */
 static const uint8_t PD_BTN[NPD] = {B_SEL, B_ENV, B_REC};
@@ -384,8 +451,11 @@ static struct {
     uint32_t pd_at[NPD];
     uint32_t pads_prev, pads_down, pads_done;   /* pads: held at the last input, presses taken, long presses done */
     uint32_t pad_at[16];
+    uint32_t pad_rgb[16];                /* the pads' colours as lit (the SETUP page shows them) */
+    uint32_t lit;                        /* the button lights as lit */
+    uint32_t setup_q;                    /* what the SETUP page shows live (redrawn when it changes) */
     int metro;
-    uint32_t home_at, save_at;
+    uint32_t home_at, save_at, quiet_at;
     int save_done;
     int slot_sel;                        /* the FM-1: the user preset PRESETS points at */
     uint32_t fm_keys;                    /* the FM-1: the keys held */
@@ -484,6 +554,8 @@ static void slot_recall(int i)
     set.brill = p->brill;
     set.reso = p->reso;
     set.reso_on = p->reso_on;
+    if (p->rel1)
+        set.relnoise = (uint8_t)(p->rel1 - 1);
     set.pad = (uint8_t)(SLOT_PAD0 + i + 1);
     sound_changed();
     app_say(t, TONE_NAME[set.tone]);
@@ -504,7 +576,7 @@ static void slot_save(int i)
     p->brill = set.brill;
     p->reso = set.reso;
     p->reso_on = set.reso_on;
-    p->rsv = 0;
+    p->rel1 = (uint8_t)(set.relnoise + 1);
     slot_name(t, i);
     if (plat_store_save(OBJ_PRESETS, &slots, sizeof slots) == 0) {
         set.pad = (uint8_t)(SLOT_PAD0 + i + 1);
@@ -553,9 +625,31 @@ static void knobs_of(int page, knob_t *k)
         else
             cat_s(k[2].value, "off");
         k[2].amt = set.reso_on ? set.reso / 100.0f : 0;
-        k[3].label = "una corda";
-        pct_text(k[3].value, set.una);
-        k[3].amt = set.una / 100.0f;
+        k[3].label = "rel. noise";
+        if (set.relnoise)
+            pct_text(k[3].value, set.relnoise);
+        else
+            cat_s(k[3].value, "off");
+        k[3].amt = set.relnoise / 100.0f;
+    } else if (page == PG_SETUP) {                /* the pedals and the pads */
+        k[0].label = "una corda";
+        pct_text(k[0].value, set.una);
+        k[0].amt = set.una / 100.0f;
+#if BOARD_SMK37
+        k[1].label = "mod wheel";
+        cat_s(k[1].value, (set.flags & SF_WHEEL) ? "sustain" : "off");
+        k[1].n = 2;
+        k[1].cur = (int)(set.flags & SF_WHEEL);
+        k[2].label = "pedal jack";
+        cat_s(k[2].value, JACK_NAME[JACK_MODE()]);
+        k[2].n = 3;
+        k[2].cur = (int)JACK_MODE();
+        k[3].label = "pad light";
+        itoa_s(PADL_PCT[set.padlight], k[3].value);
+        cat_s(k[3].value, " %");
+        k[3].n = 4;
+        k[3].cur = set.padlight;
+#endif
     } else if (page == PG_ABOUT) {                /* what to check on a unit: the audio's load, the voices */
         static int vmax;
         int v = erk_active();
@@ -613,10 +707,37 @@ static void knob_turn(int page, int i, int d)
             lo = 30;
             hi = 240;
         }
+    } else if (page == PG_SETUP) {
+        if (i == 0) {
+            v = &set.una;
+        } else {
+#if BOARD_SMK37
+            int f = set.flags, old = (int)JACK_MODE();
+            if (i == 1)
+                f = d > 0 ? f | (int)SF_WHEEL : d < 0 ? f & ~(int)SF_WHEEL : f;
+            else if (i == 2)
+                f = (f & ~(3 << SF_JACK_SH)) | clamp(old + d, 0, 2) << SF_JACK_SH;
+            else
+                set.padlight = (uint8_t)clamp(set.padlight + d, 0, 3);
+            if (f != set.flags) {
+                set.flags = (uint8_t)f;
+                if (i == 2 && JACK_MODE() == 0)
+                    ev_put(EV_JACK_LEARN, 0);     /* back to auto: the rest learnt again (the pedal up now) */
+            }
+            changed();
+            ui.active = i;
+            ui.active_at = plat_ms();
+            ui.strip_q = -1;
+            ui.full = 1;
+#endif
+            return;
+        }
     } else if (page == PG_TONE) {
-        static uint8_t *const P[4] = {&set.curve, &set.brill, &set.reso, &set.una};
+        static uint8_t *const P[4] = {&set.curve, &set.brill, &set.reso, &set.relnoise};
         v = P[i];
         choice = i == 0;
+        if (i == 3)
+            step = 5;
         if (i == 2) {
             if (d < 0 && set.reso_on && set.reso == 0) {
                 set.reso_on = 0;
@@ -654,28 +775,42 @@ static void knob_turn(int page, int i, int d)
 }
 
 /* ---------------------------------------------------------------- pads and lights */
+#if BOARD_SMK37
+/* a pad in colour c, its brightest channel at m (the hue kept) */
+static void pad_lit(int p, const uint8_t *c, int m)
+{
+    int top = c[0] > c[1] ? c[0] : c[1];
+    uint32_t r, g, b;
+    top = top > c[2] ? top : c[2];
+    r = (uint32_t)((c[0] * m + top / 2) / top);
+    g = (uint32_t)((c[1] * m + top / 2) / top);
+    b = (uint32_t)((c[2] * m + top / 2) / top);
+    plat_pad_rgb(p, (uint8_t)r, (uint8_t)g, (uint8_t)b);
+    ui.pad_rgb[p] = r << 16 | g << 8 | b;
+}
+#endif
+
 static void lights(uint32_t pads_held)
 {
 #if BOARD_SMK37
-    /* the voices amber (dim) and bright gold (the one chosen); the presets warm grey (filled), warm ivory (the one
-     * chosen), dark (empty). A pad held is bright. (Little blue: the LEDs turn warm tones cold, design/DESIGN.md) */
+    /* the voices amber (dim) and bright gold (the one chosen); the presets: empty a pale warm grey, filled a brighter
+     * one, the one chosen warm ivory. A pad held is bright. (Little blue: the LEDs turn warm tones cold,
+     * design/DESIGN.md.) The pad light sets each level's brightest channel: the chosen pad at 45..100 %, the dim
+     * levels less and with a floor, so that every level stays visible and apart from the next at every step (at
+     * 100 %: 1.1's colours; an empty preset was dark there) */
     static const uint8_t VDIM[3] = {120, 72, 10}, VON[3] = {255, 140, 16}, SDIM[3] = {72, 54, 34},
                          SON[3] = {255, 190, 110};
-    int p;
+    static const uint8_t PADL_ON[4] = {115, 153, 204, 255}, PADL_DIM[4] = {56, 72, 96, 120},
+                         PADL_FILLED[4] = {52, 62, 74, 88}, PADL_EMPTY[4] = {26, 29, 32, 36};
+    int p, l = set.padlight;
     for (p = 0; p < 16; p++) {
         int on = set.pad == p + 1 || (pads_held >> p & 1u);
-        const uint8_t *c;
-        if (p < SLOT_PAD0) {
-            c = on ? VON : VDIM;
-        } else if (on) {
-            c = SON;
-        } else if (slots.s[p - SLOT_PAD0].used) {
-            c = SDIM;
-        } else {
-            plat_pad_rgb(p, 0, 0, 0);
-            continue;
-        }
-        plat_pad_rgb(p, c[0], c[1], c[2]);
+        if (p < SLOT_PAD0)
+            pad_lit(p, on ? VON : VDIM, on ? PADL_ON[l] : PADL_DIM[l]);
+        else if (on)
+            pad_lit(p, SON, PADL_ON[l]);
+        else
+            pad_lit(p, SDIM, slots.s[p - SLOT_PAD0].used ? PADL_FILLED[l] : PADL_EMPTY[l]);
     }
 #else
     (void)pads_held;
@@ -694,6 +829,7 @@ static void lights(uint32_t pads_held)
             b |= 1u << B_OCTDN;
         if (set.octave > 0)
             b |= 1u << B_OCTUP;
+        ui.lit = b;
         plat_lights(b, 0, 0, 0, 0);
     }
 }
@@ -705,12 +841,23 @@ static void pedals_send(void)
     ev_put(EV_SOFT, (ui.pd_latch[PD_SOFT] || ui.pd_hold[PD_SOFT]) ? 127u : 0u);
 }
 
-/* the pedal buttons: a tap latches the pedal (the next tap lets go), held it is down while held */
+/* the pedal buttons. SEQ REC (the FM-1's REC), the sustain: a toggle, each press on or off, its light on while on
+ * (1.1's tap-or-hold was easily left on: every note then held). SCALE and CHORD: a tap latches the pedal (the next tap
+ * lets go), held it is down while held */
 static void pedal_buttons(uint32_t down, uint32_t up, uint32_t now)
 {
     int i, chg = 0;
     for (i = 0; i < NPD; i++) {
         uint32_t b = 1u << PD_BTN[i];
+        if (i == PD_SUS) {
+            if ((down & b) && now - ui.pd_at[i] >= PAD_DEBOUNCE_MS) {
+                ui.pd_latch[i] = (uint8_t)!ui.pd_latch[i];
+                ui.pd_at[i] = now;
+                app_say("SUSTAIN", ui.pd_latch[i] ? "ON" : "OFF");
+                chg = 1;
+            }
+            continue;
+        }
         if (down & b) {
             if (ui.pd_latch[i]) {
                 ui.pd_latch[i] = 0;
@@ -914,8 +1061,11 @@ static void input(void)
         ui.active = -1;
         ui.strip_q = -1;
     }
-    /* saved by itself once the piano is quiet (a flash write stops the sound for a moment) */
-    if (set_dirty && now - set_changed_at > 2000u && erk_active() == 0) {
+    /* saved by itself once the piano is quiet, the room's tail too (a flash write stops the sound and USB for a
+     * moment): no note for 1.5 s */
+    if (erk_active())
+        ui.quiet_at = now;
+    if (set_dirty && now - set_changed_at > 2000u && now - ui.quiet_at > 1500u) {
         if (plat_store_save(OBJ_SETTINGS, &set, sizeof set) == 0)
             set_dirty = 0;
     }
@@ -943,10 +1093,11 @@ static void draw_header(void)
         cat_s(t, n);
         header_text(t, 0);
     } else if (ui.page == PG_PLAY) {
-        header_text(TONE_NAME[set.tone], ROOM_NAME[set.room]);
+        header_text(TONE_NAME[set.tone], ui.pd_latch[PD_SUS] ? "SUSTAIN ON" : ROOM_NAME[set.room]);
     } else {
-        header_text(ui.page == PG_TONE ? "TONE & TOUCH" : ui.page == PG_ROOM ? "ROOM" : "ABOUT", 0);
-        page_dots(3, ui.page - 1);
+        static const char *const TITLE[NPAGES] = {"", "TONE & TOUCH", "ROOM", SETUP_TITLE, "ABOUT"};
+        header_text(TITLE[ui.page], 0);
+        page_dots(NPAGES - 1, ui.page - 1);
     }
 }
 
@@ -997,7 +1148,7 @@ static void draw_play(int force)
         chg = 1;
     if (chg && (force || plat_ms() - ui.strings_at >= 33u)) {   /* the strings: ~30 frames a second at most */
         ui.strings_at = plat_ms();
-        restore(27, 151);
+        restore(RULE_Y, 151);                 /* (from the rule down: the treble strings' glow reaches row 26) */
         dampers(lvl, held, sus);
         lit_strings(lvl);
         keyboard(lvl, held);
@@ -1035,6 +1186,8 @@ static void draw_page(void)
             tone_page(set.curve, au.last_vel ? (int)au.last_vel : 88);
         else if (ui.page == PG_ROOM)
             room_page(set.room, set.size / 100.0f, set.amount / 100.0f, set.width / 100.0f);
+        else if (ui.page == PG_SETUP)
+            setup_page();
         else if (ui.page == PG_ABOUT)
             about_page();
     }
@@ -1056,6 +1209,12 @@ static void draw_page(void)
     else if (ui.page == PG_TONE && (int)au.last_vel != ui.vel_q) {
         ui.vel_q = (int)au.last_vel;
         ui.full = 1;                          /* the dot follows the last note: next frame */
+    } else if (ui.page == PG_SETUP) {
+        uint32_t q = setup_live();
+        if (q != ui.setup_q) {                /* the pedals, the jack, the pads changed: next frame */
+            ui.setup_q = q;
+            ui.full = 1;
+        }
     }
     flush();
 }
@@ -1176,6 +1335,18 @@ int app_expect(const char *what, int *got)
         *got = set.bpm;
     else if (!strcmp(what, "dirty"))
         *got = set_dirty;
+    else if (!strcmp(what, "relnoise"))
+        *got = set.relnoise;
+    else if (!strcmp(what, "padlight"))
+        *got = set.padlight;
+    else if (!strcmp(what, "wheel_sus"))
+        *got = (int)(set.flags & SF_WHEEL);
+    else if (!strcmp(what, "jack_mode"))
+        *got = (int)JACK_MODE();
+    else if (!strcmp(what, "jack_learnt"))
+        *got = au.jack_init;
+    else if (!strcmp(what, "lit_rec"))            /* SEQ REC's light */
+        *got = (int)(ui.lit >> B_REC & 1u);
     else
         return 0;
     return 1;

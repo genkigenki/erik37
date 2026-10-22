@@ -90,6 +90,10 @@ static const uint8_t silent_blk[ERK_BLKB] = {0, 0x88, 0x88, 0x88, 0x88, 0x88, 0x
 
 static inline int32_t sat16(int32_t v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
 static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
+/* p >> 15 and p >> 14 rounded toward zero: in the feedback loops (the strings, the room) a decaying state then
+ * reaches 0 (rounded down, it settled on a negative value and stayed: a constant offset at the output) */
+static inline int32_t tz15(int32_t p) { return (p + ((p >> 31) & 32767)) >> 15; }
+static inline int32_t tz14(int32_t p) { return (p + ((p >> 31) & 16383)) >> 14; }
 /* the 64-bit products, out of line */
 static __attribute__((noinline)) uint32_t mulq30(uint32_t a, uint32_t b) { return (uint32_t)(((uint64_t)a * b) >> 30); }
 static __attribute__((noinline)) int32_t muls(int32_t a, int32_t b, int sh) { return (int32_t)(((int64_t)a * b) >> sh); }
@@ -157,15 +161,20 @@ static void stream_start(stream *s, const erk_smp *m, int32_t w)
     s->w = s->wt = w;
 }
 
-/* a block's source samples: n decoded into out (the decoder's state in registers; erk_codec.h by hand) */
+/* one ADPCM sample: the prediction, the nibble q (-8..7) at the block's shift, clamped */
+#define DEC1(q)                                                                                          do {                                                                                                     int32_t v_ = ((c1 * s1 + c2 * s2 + 32) >> 6) + (q) * (1 << sh);                                      v_ = v_ < -32768 ? -32768 : v_ > 32767 ? 32767 : v_;                                                 s2 = s1;                                                                                             s1 = v_;                                                                                             *out++ = v_;                                                                                     } while (0)
+
+/* a block's source samples: n decoded into out (the decoder's state in registers; erk_codec.h by hand). In runs: up
+ * to the ADPCM block's end, the loop's end or n, whichever comes first, so that the per-sample loop has no checks
+ * (the block header and the loop's end are taken between the runs: about two runs a call); within a run a byte at a
+ * time, its two nibbles (low first), an odd sample at either end alone. Bit for bit 1.1's decoder */
 static __attribute__((noinline)) void stream_decode(stream *s, int32_t *out, int n)
 {
     const uint8_t *cur = s->d.cur, *next = s->d.next;
     int32_t nib = s->d.nib, sh = s->d.sh, c1 = s->d.c1, c2 = s->d.c2, s1 = s->d.s1, s2 = s->d.s2;
     uint32_t pos = s->pos, lend = s->lend;
-    int i;
-    for (i = 0; i < n; i++) {
-        int32_t q, v;
+    while (n > 0) {
+        int32_t m, e;
         if (nib == ERK_BLK) {                         /* the next block's header */
             int h = next[0];
             sh = h & 15;
@@ -175,15 +184,29 @@ static __attribute__((noinline)) void stream_decode(stream *s, int32_t *out, int
             next += ERK_BLKB;
             nib = 0;
         }
-        q = cur[nib >> 1];
-        q = (nib & 1) ? q >> 4 : q & 15;
-        nib++;
-        v = ((c1 * s1 + c2 * s2 + 32) >> 6) + ((q ^ 8) - 8) * (1 << sh);
-        v = v < -32768 ? -32768 : v > 32767 ? 32767 : v;
-        s2 = s1;
-        s1 = v;
-        out[i] = v;
-        if (++pos == lend) {                          /* the loop's end (or the sample's) */
+        m = ERK_BLK - nib;
+        m = m < n ? m : n;
+        m = (uint32_t)m < lend - pos ? m : (int32_t)(lend - pos);   /* (pos < lend here) */
+        n -= m;
+        pos += (uint32_t)m;
+        e = nib + m;
+        {
+            const uint8_t *bp = cur + (nib >> 1);
+            if (nib & 1) {
+                DEC1(((*bp++ >> 4) ^ 8) - 8);
+                nib++;
+            }
+            for (; nib + 1 < e; nib += 2) {           /* two samples an iteration */
+                int32_t b = *bp++;
+                DEC1(((b & 15) ^ 8) - 8);
+                DEC1(((b >> 4) ^ 8) - 8);
+            }
+            if (nib < e) {
+                DEC1(((*bp & 15) ^ 8) - 8);
+                nib++;
+            }
+        }
+        if (pos == lend) {                            /* the loop's end (or the sample's) */
             if (s->loop_len) {
                 next = s->base + (s->loop / ERK_BLK) * ERK_BLKB;
                 s1 = s->h1;
@@ -559,12 +582,23 @@ void erk_panic(void)
 void erk_shed(void)
 {
     int i, n = 0;
+    voice *q = 0;
     for (i = 0; i < ERK_VOICES + ERK_DYING && n < 2; i++)
         if (vc[i].state == V_REL || vc[i].state == V_RING || (vc[i].state == V_SUST && gain_of(&vc[i]) < 600)) {
             vc[i].state = V_FADE;
             vc[i].m = FADE_M;
             n++;
         }
+    if (n)
+        return;
+    for (i = 0; i < ERK_VOICES + ERK_DYING; i++)  /* none let go (every note held): the quietest held one, if faint */
+        if ((vc[i].state == V_ON || vc[i].state == V_SUST) && gain_of(&vc[i]) < 2000 &&
+            (!q || gain_of(&vc[i]) < gain_of(q)))
+            q = &vc[i];
+    if (q) {
+        q->state = V_FADE;
+        q->m = FADE_M;
+    }
 }
 
 int erk_active(void)
@@ -604,8 +638,8 @@ static __attribute__((noinline)) void res_block(const int32_t *L, const int32_t 
         for (c = 0; c < NRES; c++) {
             comb *k = &res_c[c];
             int32_t p = k->pos, o = k->ln[p];
-            k->lp += ((o - k->lp) * 9000) >> 15;                               /* string loss: highs die first */
-            o = (k->lp * k->g) >> 15;
+            k->lp = o + tz15((k->lp - o) * (32768 - 9000));                    /* string loss: highs die first */
+            o = tz15(k->lp * k->g);
             k->ln[p] = (int16_t)sat16(in + o);
             k->pos = p + 1 == k->len ? 0 : p + 1;
             if (c & 1)
@@ -639,7 +673,7 @@ static int16_t fdn_buf[701 + 811 + 919 + 1031 + 1153 + 1279 + 1409 + 1543];
 static int16_t ap_buf[113 + 167 + 229 + 317], pre_buf[PRE_MAX];
 static int16_t *fdn_line[NFDN], *ap_line[4];
 static uint16_t fdn_n[NFDN], fdn_pos[NFDN], ap_pos[4], pre_pos, pre_n;
-static int32_t fdn_lp[NFDN], fdn_g[NFDN], fdn_damp, rev_prev_l, rev_prev_r, rev_on, rev_mix, rev_w;
+static int32_t fdn_lp[NFDN], fdn_g[NFDN], fdn_keep, rev_prev_l, rev_prev_r, rev_on, rev_mix, rev_w;
 
 static __attribute__((noinline)) void rev_block(const int32_t *L, const int32_t *R, int32_t *oL, int32_t *oR)
 {
@@ -660,11 +694,11 @@ static __attribute__((noinline)) void rev_block(const int32_t *L, const int32_t 
         }
         for (i = 0; i < NFDN; i++) {
             int32_t d = fdn_line[i][fdn_pos[i]];
-            fdn_lp[i] += ((d - fdn_lp[i]) * fdn_damp) >> 15;
+            fdn_lp[i] = d + tz15((fdn_lp[i] - d) * fdn_keep);
             o[i] = d;
             h[i] = fdn_lp[i];
         }
-        /* fast Walsh-Hadamard (x 1/sqrt 8 folded into fdn_g) */
+        /* fast Walsh-Hadamard (x 1/sqrt 8 folded into fdn_g, Q14: |h| < 2^18) */
         for (i = 0; i < 8; i += 2) { int32_t p = h[i], q = h[i + 1]; h[i] = p + q; h[i + 1] = p - q; }
         for (i = 0; i < 8; i += 4) {
             int32_t p0 = h[i], p1 = h[i + 1], q0 = h[i + 2], q1 = h[i + 3];
@@ -673,7 +707,7 @@ static __attribute__((noinline)) void rev_block(const int32_t *L, const int32_t 
         for (i = 0; i < 4; i++) { int32_t p = h[i], q = h[i + 4]; h[i] = p + q; h[i + 4] = p - q; }
         for (i = 0; i < NFDN; i++) {
             int p = fdn_pos[i];
-            fdn_line[i][p] = (int16_t)sat16(((h[i] * fdn_g[i]) >> 15) + ((i & 1) ? -x : x));
+            fdn_line[i][p] = (int16_t)sat16(tz14(h[i] * fdn_g[i]) + ((i & 1) ? -x : x));
             fdn_pos[i] = (uint16_t)(p + 1 >= fdn_n[i] ? 0 : p + 1);
         }
         l = o[0] - o[2] + o[4] - o[6];
@@ -712,10 +746,10 @@ static void rev_apply(void)                           /* the render, at a block'
         p += fdn_hall[i];
         fdn_pos[i] = 0;
         fdn_lp[i] = 0;
-        /* 10^(-3 n / (fs rt)) / sqrt 8 */
-        fdn_g[i] = rev_on ? (int32_t)(exp2_f(-3.0f * 3.3219281f * (float)fdn_n[i] / (22050.0f * rt)) * 11585.2f) : 0;
+        /* 10^(-3 n / (fs rt)) / sqrt 8, Q14 */
+        fdn_g[i] = rev_on ? (int32_t)(exp2_f(-3.0f * 3.3219281f * (float)fdn_n[i] / (22050.0f * rt)) * 5792.6f) : 0;
     }
-    fdn_damp = type == ERK_REV_CHURCH ? 12500 : type == ERK_REV_HALL ? 15000 : 19000;
+    fdn_keep = 32768 - (type == ERK_REV_CHURCH ? 12500 : type == ERK_REV_HALL ? 15000 : 19000);   /* the damping */
     pre_n = type == ERK_REV_CHURCH ? PRE_MAX : type == ERK_REV_HALL ? 330 : 150;
     pre_pos = 0;
     memset(fdn_buf, 0, sizeof fdn_buf);
@@ -935,10 +969,10 @@ static __attribute__((noinline)) void eq_block(int32_t *x, int32_t *s, int32_t g
     int32_t lo = s[0], hi = s[1];
     for (i = 0; i < ERK_BLOCK; i++) {
         int32_t v = x[i];
-        lo += ((v - lo) >> 6) * 143 >> 6;             /* a = 0.0350 (Q12 143) */
-        v += ((lo >> 6) * glo) >> 6;
-        hi += ((v - hi) >> 6) * 1425 >> 6;            /* a = 0.348 */
-        v += (((v - hi) >> 6) * ghi) >> 6;
+        lo += ((v - lo) >> 3) * 143 >> 9;             /* a = 0.0350 (Q12 143); >> 3: < 2^31 to |x| 2^22 */
+        v += ((lo >> 3) * glo) >> 9;
+        hi += ((v - hi) >> 3) * 1425 >> 9;            /* a = 0.348 */
+        v += (((v - hi) >> 3) * ghi) >> 9;
         x[i] = v;
     }
     s[0] = lo;
@@ -946,6 +980,13 @@ static __attribute__((noinline)) void eq_block(int32_t *x, int32_t *s, int32_t g
 }
 
 static inline int32_t sat24(int32_t v) { return v < -8388608 ? -8388608 : v > 8388607 ? 8388607 : v; }
+/* the mix (2^18 scale) x mq (Q12) / 128, rounded, in 32-bit products: x split at 2^8 (|x >> 8| * mq < 2^28), so
+ * every bit of the mix reaches the 24-bit word (shifting x down before the product dropped 5 of them) */
+static inline int32_t out24(int32_t x, int32_t mq)
+{
+    x = clampi(x, -8388607, 8388607);
+    return sat24((x >> 8) * mq * 2 + (((x & 255) * mq + 64) >> 7));
+}
 
 void erk_render_gain(int32_t *lr, int frames, int32_t master_q12)
 {
@@ -995,9 +1036,9 @@ void erk_render_gain(int32_t *lr, int frames, int32_t master_q12)
             }
         }
         mq = (st.master * clampi(master_q12, 0, 4096)) >> 15;   /* Q12 */
-        for (i = 0; i < ERK_BLOCK; i++) {             /* 2^18 x Q12 -> 24 bit, 32-bit products */
-            lr[2 * (f + i)] = sat24(((clampi(L[i], -8388607, 8388607) >> 5) * mq) >> 2);
-            lr[2 * (f + i) + 1] = sat24(((clampi(R[i], -8388607, 8388607) >> 5) * mq) >> 2);
+        for (i = 0; i < ERK_BLOCK; i++) {             /* 2^18 x Q12 -> 24 bit */
+            lr[2 * (f + i)] = out24(L[i], mq);
+            lr[2 * (f + i) + 1] = out24(R[i], mq);
         }
         erk_st.blocks++;
     }

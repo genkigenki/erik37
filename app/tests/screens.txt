@@ -27,6 +27,7 @@ wait 700
 shot play-sustain.png
 tap REC
 wait 1500
+shot play-sustain-off.png
 tap SEL
 keybed 12 down 40
 keybed 24 down 50
@@ -66,6 +67,17 @@ turn K2 25
 turn K4 10
 wait 1400
 shot room-church.png
+tap RIGHT
+wait 1400
+shot setup.png
+turn K4 -3
+pad 6 down
+wait 300
+shot setup-dim.png
+pad 6 up
+wait 300
+turn K4 3
+wait 1400
 tap RIGHT
 wait 1400
 shot about.png

@@ -13,7 +13,7 @@ GOLD = Path(__file__).resolve().parent / "golden"
 shots = Path(sys.argv[1])
 update = "--update" in sys.argv
 GOLD = GOLD / sys.argv[sys.argv.index("--board") + 1] if "--board" in sys.argv else GOLD   # golden/fm1: the FM-1's
-names = sorted(p.name for p in shots.glob("*.png") if p.name[:4] in ("boot", "play", "tone", "room", "abou"))
+names = sorted(p.name for p in shots.glob("*.png") if p.name[:4] in ("boot", "play", "tone", "room", "setu", "abou"))
 bad = 0
 GOLD.mkdir(exist_ok=True)
 for n in names:

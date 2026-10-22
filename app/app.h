@@ -10,7 +10,7 @@
 #define APP_SPLASH_RGB RGB(201, 164, 92)
 #define APP_TAGLINE "a grand piano"
 #ifndef APP_VERSION
-#define APP_VERSION "1.1"                /* (tools/build.py --release passes its own) */
+#define APP_VERSION "1.2"                /* (tools/build.py --release passes its own) */
 #endif
 #define APP_BLOCK 256u                   /* frames per audio half: 5.8 ms; the keys are read every 64 frames */
 #define APP_CANVAS_PX (240u * 48u)       /* fm1-base's canvas (its own screens): the pool goes to Erik37's frame */

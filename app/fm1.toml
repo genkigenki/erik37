@@ -2,7 +2,7 @@
 name = "ERIK37"                # the build's files: erik37-smk37.fwsc
 id_prefix = "FM-1_4801"        # package identity family _4801xx: the FM-1 build FM-1_4801 + id_suffix
 smk_id_prefix = "4801"         # the SMK-37: SMK-37 Pro_4801 + id_suffix (four digits keep the Elite's name within 20)
-id_suffix = "01"               # 1.0 was _480100, 1.1 is _480101 (SMK-37 Pro_480101, FM-1_480101)
+id_suffix = "02"               # 1.0 was _480100, 1.1 _480101, 1.2 is _480102 (SMK-37 Pro_480102, FM-1_480102)
 usb_manufacturer = "erik37"
 usb_product = "ERIK37"
 words = "words.tsv"
