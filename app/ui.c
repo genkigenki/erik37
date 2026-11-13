@@ -100,6 +100,46 @@ static void pct_text(char *b, int v)
     itoa_s(v, b);
 }
 
+/* a time: "0.25 s" below a second, "1.2 s" from one */
+static void secs_text(char *b, int ms)
+{
+    char t[8];
+    b[0] = 0;
+    if (ms < 1000) {
+        int c = (ms + 5) / 10;
+        cat_s(b, c < 10 ? "0.0" : "0.");
+        itoa_s(c, t);
+    } else {
+        int d = (ms + 50) / 100;
+        itoa_s(d / 10, t);
+        cat_s(b, t);
+        cat_s(b, ".");
+        itoa_s(d % 10, t);
+    }
+    cat_s(b, t);
+    cat_s(b, " s");
+}
+
+/* a frequency: "800 Hz", "1.1 kHz" */
+static void hz_text(char *b, int hz)
+{
+    char t[8];
+    b[0] = 0;
+    if (hz < 1000) {
+        itoa_s(hz, t);
+        cat_s(b, t);
+        cat_s(b, " Hz");
+    } else {
+        int d = (hz + 50) / 100;
+        itoa_s(d / 10, t);
+        cat_s(b, t);
+        cat_s(b, ".");
+        itoa_s(d % 10, t);
+        cat_s(b, t);
+        cat_s(b, " kHz");
+    }
+}
+
 /* ---------------------------------------------------------------- the play screen */
 
 static const uint8_t WHITE_OF[12] = {1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1};
@@ -561,6 +601,59 @@ static void setup_page(void)
     itoa_s(set.una, t);
     cat_s(cap, t);
 #endif
+    text(120, 166, &F_ITAL11, cap, IVORY_DIM, 0, 'c', 1.0f);
+}
+
+/* ---------------------------------------------------------------- PAD LAYER */
+
+/* the pad note's shape over 6 s: the attack up to its level, held while the key is down (1 s here), the release.
+ * Off: the shape dim, at full height, and a word on how to turn it on */
+static void layer_page(void)
+{
+    float p[2 * 72], at = lay_att_ms(set.lay_att) / 1000.0f, rt = lay_rel_ms(set.lay_rel) / 1000.0f, hold = 1.0f;
+    float lv = set.layer ? 0.25f + 0.75f * set.layer / 100.0f : 1.0f, xs = (GX1 - GX0) / 6.0f, xoff;
+    int i, n = 0, k;
+    char cap[48], t[16];
+    corners(GX0 - 8, GY0 - 8, GX1 + 8, GY1 + 8, GOLD_DIM, 0.9f);
+    for (k = 1; k < 6; k++)                   /* a line a second */
+        dotted_v((int)(GX0 + xs * k + 0.5f), GY0, GY1, GOLD_DEEP, 0.9f, 3);
+    hline(GX0, GX1 + 1, GY1, GOLD_DIM, 0.9f, 0);
+    vline(GX0, GY0, GY1 + 1, GOLD_DIM, 0.9f, 0);
+    for (i = 0; i < 72; i++) {                 /* the shape: amplitude against time */
+        float tt = 6.0f * i / 71, a;
+        if (tt < at)
+            a = tt / at;
+        else if (tt < at + hold)
+            a = 1.0f;
+        else
+            a = fpow(0.001f, (tt - at - hold) / rt);
+        p[2 * n] = GX0 + xs * tt;
+        p[2 * n + 1] = GY1 - (GY1 - GY0) * lv * a;
+        n++;
+    }
+    mask_clear(GX0 - 12, GY0 - 12, GX1 + 13, GY1 + 13);
+    mask_line(p, n, set.layer ? 1.4f : 1.0f);
+    if (set.layer) {
+        mask_glow(2.0f, GOLD, 0.5f);
+        mask_clear(GX0 - 12, GY0 - 12, GX1 + 13, GY1 + 13);
+        mask_line(p, n, 1.4f);
+        mask_fill(GOLD, 1.0f);
+    } else {
+        mask_fill(GOLD_DIM, 0.5f);
+    }
+    xoff = GX0 + xs * (at + hold);
+    dotted_v((int)(xoff + 0.5f), GY0, GY1 - 1, IVORY_DIM, 0.7f, 2);
+    text(GX0, GY1 + 4, &F_ITAL10, "key down", IVORY_DIM, 0, 'l', 1.0f);
+    text(xoff + 3, GY0 - 3, &F_ITAL10, "let go", IVORY_DIM, 0, 'l', 1.0f);
+    text(GX1 + 1, GY1 + 4, &F_ITAL10, "6 s", IVORY_DIM, 0, 'r', 1.0f);
+    cap[0] = 0;
+    if (set.layer) {
+        cat_s(cap, "a soft pad under the piano  \x7f  ");
+        hz_text(t, lay_tone_hz(set.lay_tone));
+        cat_s(cap, t);
+    } else {
+        cat_s(cap, "off: K1 up for a pad under the piano");
+    }
     text(120, 166, &F_ITAL11, cap, IVORY_DIM, 0, 'c', 1.0f);
 }
 

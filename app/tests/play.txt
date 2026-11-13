@@ -83,12 +83,13 @@ wait 30
 expect sustain 0
 wheel mod 0
 wait 30
-# PEDALS & PADS (page III): K2 the mod wheel as sustain, K3 the jack, K4 the pad light
+# PEDALS & PADS (page IV): K2 the mod wheel as sustain, K3 the jack, K4 the pad light
+tap RIGHT
 tap RIGHT
 tap RIGHT
 tap RIGHT
 wait 30
-expect page 3
+expect page 4
 turn K2 1
 wait 30
 expect wheel_sus 1
@@ -251,13 +252,22 @@ expect room 2
 tappad 4
 wait 200
 expect room 1
-# the page knobs: no other knob does the same; K6..K8 have no job
+# the page knobs: no other knob does the same; K6..K8 change no setting: they send MIDI CC 16..18 (erik37#4), from
+# 64, 2 a detent, within 0..127
+out
 turn ALGO 2
 turn PRESET 2
 turn SELECT 1
 wait 30
 expect tone 1
 expect page 0
+expect_out USB B0 11 44
+expect_out USB B0 12 44
+expect_out USB B0 10 42
+out
+turn SELECT -40
+wait 30
+expect_out USB B0 10 00
 # the play screen's K4: the metronome's tempo; SEQ PLAY: the metronome
 turn K4 4
 wait 30
@@ -292,12 +302,53 @@ expect reso_on 1
 tap HOME
 wait 30
 expect page 0
-# the faders: nothing (every sound setting is on a knob)
+# the faders: MIDI CC 80..83 (erik37#4), no sound setting (every one is on a knob); their first reading is not sent
+out
 fader 2 0
 wait 30
+expect_out USB B0 52 00
 fader 2 127
 wait 30
 expect page 0
+expect_out USB B0 52 7F
+fader 0 60
+wait 30
+expect_out USB B0 50 3C
+# ... a change of one step goes out once it has held for 40 ms
+out
+fader 0 61
+wait 60
+expect_out USB B0 50 3D
+# PAD LAYER (page III): off at first (no pad note starts); K1 the level, stored, kept in a user preset
+tap RIGHT
+tap RIGHT
+tap RIGHT
+wait 30
+expect page 3
+expect layer 0
+keybed 12 down 100
+wait 40
+expect pad_voices 0
+keybed 12 up
+wait 30
+turn K1 8
+wait 30
+expect layer 40
+turn K2 -20
+wait 30
+expect lay_att 0
+keybed 14 down 90
+wait 200
+expect pad_voices 1
+wav pad.wav
+keybed 14 up
+wait 200
+wavstop
+expect peak_db_min -50
+wait 3000
+expect pad_voices 0
+tap HOME
+wait 30
 # saved by itself once the piano is quiet
 wait 2600
 expect dirty 0
@@ -305,6 +356,7 @@ expect store_writes >0
 reboot
 wait 300
 expect relnoise 35
+expect layer 40
 expect wheel_sus 1
 expect tone 1
 expect curve 2

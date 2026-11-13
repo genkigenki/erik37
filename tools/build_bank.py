@@ -130,6 +130,36 @@ def crossfade(y, ls, le, X, r):
     return y[:le]
 
 
+def spectral_crossfade(y, ls, le, X):
+    """the loop's crossfade bin by bin, each bin's magnitude kept (erik37#5): mixed as plain samples, a partial whose
+    phase at the loop's end is off from its phase at the start cancels for a moment, a dip of up to ~20 dB in its
+    band once a loop: at a loop of 0.15..0.5 s a 2..7 Hz wah. Here the two sides are mixed in the STFT: each bin's
+    magnitude is the crossfade of theirs and its phase turns from A's over to B's, so no partial cancels; frames that
+    reach outside the crossfade are pure (the end of the loop goes over into its start)"""
+    nper = 1024
+    while nper > 64 and X < 2 * nper:
+        nper //= 2
+    hop = nper // 8
+    pad = nper
+    if ls - X - pad < 0 or le + pad > len(y):
+        return crossfade(y, ls, le, X, 1.0)
+    a = y[le - X - pad:le + pad]
+    b = y[ls - X - pad:ls + pad]
+    kw = dict(nperseg=nper, noverlap=nper - hop, window="hann")
+    _, t, SA = signal.stft(a, boundary=None, padded=False, **kw)
+    _, _, SB = signal.stft(b, boundary=None, padded=False, **kw)
+    c = t                                                    # frame centres (samples: fs 1)
+    w = np.clip((c - pad - nper / 2) / max(1.0, X - nper), 0.0, 1.0)[None, :]
+    M = (1 - w) * np.abs(SA) + w * np.abs(SB)
+    d = np.unwrap(np.angle(SB * np.conj(SA)), axis=1)      # the phase B is ahead of A, bin by bin, unwrapped
+    Y = M * np.exp(1j * (np.angle(SA) + w * d))
+    _, z = signal.istft(Y, boundary=False, **kw)
+    y = y.copy()
+    n = min(X, len(z) - pad)
+    y[le - X:le - X + n] = z[pad:pad + n]
+    return y[:le]
+
+
 def detrend_loop(y, ls, le, fs):
     """remove the level slope over the loop (the layer's own decay vs the zone model)"""
     L = le - ls
@@ -142,6 +172,36 @@ def detrend_loop(y, ls, le, fs):
     y = y.copy()
     y[ls:] *= 10 ** (-k * t / 20)
     return y, float(k)
+
+
+def steady_loop(y, ls0, L0, fs, nper=2048):
+    """take the beating out of the loop region (erik37#5): a loop of 0.13..0.5 s repeats its unisons' beating and
+    the partials' swells as a 2..7 Hz tremolo and timbre sweep. Each STFT bin is scaled to its mean magnitude over
+    the loop (phases kept, -12 .. +6 dB), in full from where the loop search may start, ramped in over the crossfade
+    window before that; the attack before it is left as it is"""
+    X = max(64, int(0.35 * L0))
+    hop = nper // 4
+    full = max(0, int(ls0 - 0.15 * L0))
+    r0 = max(0, full - X)
+    _, t, S = signal.stft(y, nperseg=nper, noverlap=nper - hop, window="hann", boundary="even", padded=True)
+    mag = np.abs(S)
+    sm = 0.5 * mag
+    sm[1:] += 0.25 * mag[:-1]
+    sm[:-1] += 0.25 * mag[1:]
+    sm += 1e-9                                                           # smoothed over frequency
+    c = t                                                                # frame centres (samples: fs 1)
+    lp = (c >= ls0) & (c <= ls0 + L0)
+    if not lp.any():
+        return y
+    target = np.sqrt(np.mean(sm[:, lp] ** 2, axis=1))[:, None]
+    g = np.clip(target / sm, 10 ** (-12 / 20), 10 ** (6 / 20))
+    w = np.clip((c - r0) / max(1, full - r0), 0.0, 1.0)[None, :]
+    _, out = signal.istft(S * g ** w, nperseg=nper, noverlap=nper - hop, window="hann", boundary=True)
+    out = out[:len(y)]
+    if len(out) < len(y):
+        out = np.concatenate([out, y[len(out):]])
+    out[:r0] = y[:r0]
+    return out
 
 
 def resample(x, fs_in, fs_out):
@@ -192,6 +252,7 @@ def main():
     ap.add_argument("--budget", type=float, default=450, help="KB (1024 bytes), the whole bank image")
     ap.add_argument("--report")
     ap.add_argument("--nfilt", type=int, default=16)
+    ap.add_argument("--steady", action="store_true", help="take the beating out of the loops (erik37 1.3)")
     a = ap.parse_args()
 
     src = E.source(a.source)
@@ -282,8 +343,10 @@ def main():
                     k = (len(y) - 64) / (ls0 + 1.2 * L0)
                     ls0, L0 = int(ls0 * k), int(L0 * k)
                 y, slope = detrend_loop(y, ls0, ls0 + L0, fsz)
+                if a.steady:
+                    y = steady_loop(y, ls0, L0, fsz)
                 ls, le, r, X = find_loop(y, ls0, L0)
-                y = crossfade(y, ls, le, X, r)
+                y = spectral_crossfade(y, ls, le, X) if a.steady else crossfade(y, ls, le, X, r)
                 nf = int(0.001 * fsz)                    # 1 ms fade-in: a file cut right at the hammer must not step
                 y[:nf] *= 0.5 - 0.5 * np.cos(np.pi * np.arange(nf) / nf)
                 pk = np.max(np.abs(y))
@@ -387,7 +450,7 @@ def main():
         f.write(img)
 
     tot = len(img)
-    rep = {"source": a.source, "title": src.title, "zones": N, "layers": L, "roots": roots, "layer_vel": vc,
+    rep = {"source": a.source, "title": src.title, "steady": bool(a.steady), "zones": N, "layers": L, "roots": roots, "layer_vel": vc,
            "scale": round(scale, 3), "bytes": tot, "kb": round(tot / 1024, 1), "budget_kb": a.budget,
            "tables_bytes": overhead, "release_bytes": rel_bytes, "release_source": "own" if use_own else "synth",
            "sample_bytes": len(data) - rel_bytes,

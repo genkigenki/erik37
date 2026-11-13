@@ -14,6 +14,8 @@ instructions (a backward branch closes each), as the repo's other budgets count 
   two layers  a second stream (the attack's first 0.3 s, at most --xf notes at once)
   the bus     the reverb (8-line FDN, every 2nd sample), the resonance (12 combs, every 4th), the tone EQ (both
               channels), the mix and the output, the block's upkeep / 32, the keys' poll
+  the pads    the pad layer (1.3), counted as on: pad_run's loop (two oscillators) for each of its 8 notes, pad_mix's
+              loop (the bus's low pass), each note's block upkeep / 32
 The pitch wheel all the way up (+2 semitones: the streams decode 12 % more) is held to the same limit.
 Cycles: 1.3 an instruction (pi32v2: mostly single-cycle; loads, multiplies and taken branches more), against 320 MHz
 (the SDK's clock) and 240 MHz. The worst case: every voice sounding, --xf of them in their two-layer attack, the four
@@ -83,16 +85,20 @@ def main():
     V = run + dec * R + out + upkeep
     V2 = V + run + dec * R
     VN = run + decf(0.5) * 0.5 + out + upkeep               # a release noise (22.05 kHz)
-    B = res + rev + eq + mix + block / 32.0 + poll
+    PADV = 8
+    pad_run, pad_mix = one("pad_run"), one("pad_mix")
+    P = PADV * (pad_run + 40 / 32.0) + pad_mix                # (~40 instructions a note's block: envelope, gain, call)
+    B = res + rev + eq + mix + block / 32.0 + poll + P
     rep = {"instr": {"stream_run": run, "stream_decode": dec, "stream_decode_loops": [dec_in, dec_out], "voice_out": out, "voice_upkeep": round(upkeep, 1),
                      "voice": round(V, 1), "voice_two_layers": round(V2, 1), "resonance": res, "reverb": rev, "eq": eq,
-                     "mix_out": mix, "block": round(block / 32.0, 1), "poll": round(poll, 1), "bus": round(B, 1)}}
+                     "mix_out": mix, "block": round(block / 32.0, 1), "poll": round(poll, 1), "pad_run": pad_run, "pad_mix": pad_mix,
+                     "pad_layer": round(P, 1), "bus": round(B, 1)}}
     print(f"erik37 cpu budget (pi32v2, {a[0].split('/')[-1]}), instructions a 44.1 kHz sample:")
     print(f"  a voice {V:.0f} (interpolation {run}, decode {dec} x {R} (its loops {dec_in} / {dec_out}), "
           f"filter/pan {out}, upkeep {upkeep:.0f}); "
           f"two layers {V2:.0f}")
     print(f"  the bus {B:.0f}: reverb {rev:.0f}, resonance {res:.0f}, EQ {eq:.0f}, mix/out {mix}, block {block / 32:.0f}, "
-          f"keys {poll:.0f}")
+          f"keys {poll:.0f}, the pad layer {P:.0f} ({PADV} notes: {pad_run} a note, its bus {pad_mix})")
     ok = True
     rows = []
     for v in sorted({16, 20, 24, nv}):

@@ -623,7 +623,11 @@ static void fm1_main(void)
 #if BOARD_SMK37
         flash_ok = FL_JEDEC_OK(FL_FAR(fl_jedec_ram)());   /* the SMK-37's 1 MiB part (or the FM-1's), else RAM only */
 #else
-        flash_ok = FL_FAR(fl_jedec_ram)() == 0x856014u;   /* the expected 1 MiB part, else RAM only */
+        {   /* the stock Puya P25Q80 (85 60 14) or the UC25HQ80 (B3 60 14) of the units sold since autumn 2026: both
+             * 1 MiB, the same SPI NOR commands (fm1-base e75b072). Else RAM only, and the updater refuses (erik37#11) */
+            uint32_t id = FL_FAR(fl_jedec_ram)();
+            flash_ok = id == 0x856014u || id == 0xB36014u;
+        }
 #endif
         irq_restore(f);
         if (flash_ok) {

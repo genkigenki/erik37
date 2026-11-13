@@ -23,6 +23,7 @@
 #define ERK_XF_MAX 6           /* notes crossfading two velocity layers at once (the attack's first 0.3 s) */
 #endif
 #define ERK_RELV 4             /* release-noise voices */
+#define ERK_PADV 8             /* the pad layer's notes (erik37#6: voices of their own, two oscillators each) */
 #define ERK_NV (ERK_VOICES + ERK_DYING + ERK_RELV)
 
 enum { ERK_REV_OFF, ERK_REV_CHAMBER, ERK_REV_HALL, ERK_REV_CHURCH };
@@ -65,6 +66,10 @@ void erk_set_resonance(int level_q15);
 void erk_bend(int ratio_q16);                  /* the pitch wheel: the strings' rate ratio, Q16 (65536 none) */
 void erk_set_rel_level(int level_q15);
 void erk_set_master(int q15);
+/* the pad layer under the piano (erik37#6): its level (0: off, no pad note starts), attack and release (ms), its tone
+ * (a low pass, Hz) */
+void erk_set_pad(int level_q15, int attack_ms, int release_ms, int tone_hz);
+int erk_pad_active(void);                     /* pad notes sounding */
 float erk_room_seconds(int type, int size_q15);   /* the decay the screen shows */
 
 /* what the screen shows (written by the render once a block) */
@@ -74,7 +79,7 @@ extern volatile int32_t erk_sus_q15, erk_soft_q15;
 
 /* counters for the cost model (host only) */
 typedef struct {
-    uint64_t voice_blocks, stream_blocks, partial_blocks, blocks;
+    uint64_t voice_blocks, stream_blocks, partial_blocks, blocks, pad_blocks;
 } erk_stats;
 extern erk_stats erk_st;
 void erk_ram(int *voices, int *modal_part, int *res, int *rev);

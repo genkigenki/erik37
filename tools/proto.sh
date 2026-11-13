@@ -21,5 +21,5 @@ wait
 $P tools/modal_fit.py measure build/banks/salamander_450.json build/banks/modal_salamander.bin
 $P tools/modal_fit.py synth build/banks/modal_synth.bin
 $P tools/demos.py
-# the firmware's bank (app/assets/erik37.bank: Salamander, 18 zones x 3 layers, about 400 KB)
-$P tools/build_bank.py salamander app/assets/erik37.bank --zones 18 --layers 3 --budget 400 --report build/banks/erik37_bank.json
+# the firmware's bank (app/assets/erik37.bank: Salamander, 18 zones x 3 layers, about 386 KB: the FM-1 build fits its slot)
+$P tools/build_bank.py salamander app/assets/erik37.bank --zones 18 --layers 3 --budget 386 --steady --report build/banks/erik37_bank.json

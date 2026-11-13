@@ -69,6 +69,16 @@ wait 1400
 shot room-church.png
 tap RIGHT
 wait 1400
+shot layer-off.png
+turn K1 10
+turn K4 4
+wait 1400
+shot layer.png
+turn K1 -10
+turn K4 -4
+wait 1400
+tap RIGHT
+wait 1400
 shot setup.png
 turn K4 -3
 pad 6 down

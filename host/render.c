@@ -2,7 +2,7 @@
  * Erik37: Copyright (C) 2026 M. Geisler (genkigenki/makkuro) */
 /* Host renderer: plays an event list through the engine into a WAV.
  *   render BANK.bin EVENTS.txt OUT.wav [-r off|chamber|hall] [-m MIX] [-s RES] [-g MASTER] [-n REL] [-t TAIL_S]
- *        [-M hybrid|model MODAL.bin]
+ *        [-M hybrid|model MODAL.bin] [-P PAD_LEVEL [ATTACK_MS RELEASE_MS TONE_HZ]]
  *   render BANK.bin --cost VOICES WARM SECS VEL [opts]   the cost run (tools/cpu_budget.py, tools/icount)
  * Events: "TIME on KEY VEL", "TIME off KEY", "TIME sus VAL", "TIME soft VAL" (seconds, MIDI numbers). */
 #include <stdio.h>
@@ -101,7 +101,7 @@ int main(int argc, char **argv)
     double tail = 4.0, tend = 0;
     ev *e;
     int32_t *out;
-    int peak = 0, maxact = 0;
+    int peak = 0, maxact = 0, pad_lvl = 0, pad_a = 250, pad_r = 900, pad_t = 1100;
     char line[256];
     FILE *fe;
     if (argc == 2 && !strcmp(argv[1], "--ram")) {
@@ -133,6 +133,14 @@ int main(int argc, char **argv)
             c.rel_level = atoi(argv[i + 1]);
         else if (!strcmp(argv[i], "-t"))
             tail = atof(argv[i + 1]);
+        else if (!strcmp(argv[i], "-P")) {                   /* the pad layer: its level (Q15), attack, release, tone */
+            pad_lvl = atoi(argv[i + 1]);
+            if (i + 4 < argc && argv[i + 2][0] != '-') {
+                pad_a = atoi(argv[i + 2]);
+                pad_r = atoi(argv[i + 3]);
+                pad_t = atoi(argv[i + 4]);
+            }
+        }
         else if (!strcmp(argv[i], "-M") && i + 2 < argc) {    /* -M hybrid|model MODAL.bin */
             static erkm_bank mb;
             long mn;
@@ -145,6 +153,7 @@ int main(int argc, char **argv)
         }
     }
     erk_init(&b, &c);
+    erk_set_pad(pad_lvl, pad_a, pad_r, pad_t);
     if (!strcmp(argv[2], "--cost"))
         return cost(atoi(argv[3]), atof(argv[4]), atof(argv[5]), atoi(argv[6]));
     fe = fopen(argv[2], "r");

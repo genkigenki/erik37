@@ -10,8 +10,11 @@
 #include "draw.c"
 
 /* ---------------------------------------------------------------- settings */
-#define SET_MAGIC 0x324B5245u            /* "ERK2" (1.2: the release noise, the pad light, the wheel and the jack) */
-#define SET_MAGIC1 0x314B5245u           /* "ERK1": 1.0 / 1.1, the same size: kept, the new ones at their defaults */
+#define SET_MAGIC 0x334B5245u            /* "ERK3" (1.3: the pad layer) */
+#define SET_MAGIC2 0x324B5245u           /* "ERK2": 1.2's (the release noise, the pad light, the wheel and the jack), 4
+                                          * bytes shorter: kept, the pad layer at its defaults (off) */
+#define SET_MAGIC1 0x314B5245u           /* "ERK1": 1.0 / 1.1, 1.2's size: kept, the new ones at their defaults */
+#define SET_SIZE12 20                    /* 1.0 .. 1.2's settings, bytes */
 typedef struct {
     uint32_t magic;
     uint8_t tone, room, curve, una;      /* tone 0..3, room 0..3 (dry, chamber, hall, church), touch 0..3, una 0..100 */
@@ -23,11 +26,16 @@ typedef struct {
     uint8_t padlight;                    /* the pads' brightness, 0..3 (PADL_PCT) */
     uint8_t flags;                       /* SF_WHEEL: the mod wheel holds notes; the PEDAL jack (SF_JACK_SH): 0 auto,
                                           * 1 open at rest, 2 closed at rest */
+    uint8_t layer, lay_att, lay_rel, lay_tone;   /* the pad layer (1.3): its level (0 off), attack, release, tone,
+                                          * 0..100 each */
 } settings_t;
 #define SF_WHEEL 1u
 #define SF_JACK_SH 1
 #define JACK_MODE() ((set.flags >> SF_JACK_SH) & 3u)
 #define RELNOISE_DEF 40                  /* 1.1 had 100 (-8 dB now) */
+#define LAY_ATT_DEF 55                   /* the pad layer's attack 0.25 s, release 0.9 s, tone 1.1 kHz */
+#define LAY_REL_DEF 60
+#define LAY_TONE_DEF 40
 static settings_t set;
 static uint8_t set_dirty;
 static uint32_t set_changed_at;
@@ -52,6 +60,10 @@ static void settings_defaults(void)
     set.relnoise = RELNOISE_DEF;
     set.padlight = 3;
     set.flags = 0;                       /* only the pedal holds notes (the mod wheel not); the jack learnt */
+    set.layer = 0;                       /* the pad layer off */
+    set.lay_att = LAY_ATT_DEF;
+    set.lay_rel = LAY_REL_DEF;
+    set.lay_tone = LAY_TONE_DEF;
 }
 
 static int settings_ok(void)
@@ -59,18 +71,28 @@ static int settings_ok(void)
     return set.magic == SET_MAGIC && set.tone < 4 && set.room < 4 && set.curve < 4 && set.una <= 100 &&
            set.size <= 100 && set.amount <= 100 && set.width <= 100 && set.brill <= 100 && set.reso <= 100 &&
            set.reso_on <= 1 && set.bpm >= 30 && set.bpm <= 240 && set.octave >= -2 && set.octave <= 2 && set.pad <= 16 &&
-           set.relnoise <= 100 && set.padlight <= 3 && set.flags <= (SF_WHEEL | 2u << SF_JACK_SH);
+           set.relnoise <= 100 && set.padlight <= 3 && set.flags <= (SF_WHEEL | 2u << SF_JACK_SH) && set.layer <= 100 &&
+           set.lay_att <= 100 && set.lay_rel <= 100 && set.lay_tone <= 100;
 }
 
 static void settings_load(void)
 {
-    if (plat_store_load(OBJ_SETTINGS, &set, sizeof set) != (int)sizeof set)
+    int n;
+    memset(&set, 0, sizeof set);
+    n = plat_store_load(OBJ_SETTINGS, &set, sizeof set);
+    if (n == SET_SIZE12 && (set.magic == SET_MAGIC1 || set.magic == SET_MAGIC2)) {
+        if (set.magic == SET_MAGIC1) {       /* 1.1's: its sound and choices, 1.2's settings at their defaults */
+            set.relnoise = RELNOISE_DEF;
+            set.padlight = 3;
+            set.flags = 0;
+        }
+        set.magic = SET_MAGIC;               /* 1.2's (and 1.1's): the pad layer off */
+        set.layer = 0;
+        set.lay_att = LAY_ATT_DEF;
+        set.lay_rel = LAY_REL_DEF;
+        set.lay_tone = LAY_TONE_DEF;
+    } else if (n != (int)sizeof set) {
         set.magic = 0;
-    if (set.magic == SET_MAGIC1) {           /* 1.1's: its sound and choices, the new settings at their defaults */
-        set.magic = SET_MAGIC;
-        set.relnoise = RELNOISE_DEF;
-        set.padlight = 3;
-        set.flags = 0;
     }
     if (!settings_ok())
         settings_defaults();
@@ -90,10 +112,13 @@ static const struct {
 /* the user presets (pads 5-16, USER 1-12): the whole sound, kept in their own store object */
 #define NSLOT 12
 #define SLOT_PAD0 4                      /* pad 5 (index 4) is USER 1 */
-#define SLOT_MAGIC 0x31505245u           /* "ERP1" */
+#define SLOT_MAGIC 0x32505245u           /* "ERP2" (1.3: the pad layer) */
+#define SLOT_MAGIC1 0x31505245u          /* "ERP1": 1.0 .. 1.2's, 12 bytes a preset: kept, the pad layer off */
+#define SLOT_SIZE1 12
 typedef struct {
     uint8_t used, tone, room, curve, una, size, amount, width, brill, reso, reso_on, rel1;   /* rel1: the release
                                           * noise + 1 (0: saved by 1.1, which had none: the current one stays) */
+    uint8_t layer, lay_att, lay_rel, lay_tone;   /* the pad layer (1.3; a preset saved before: off) */
 } slot_t;
 static struct {
     uint32_t magic;
@@ -109,7 +134,8 @@ static int slots_ok(void)
         const slot_t *p = &slots.s[i];
         if (p->used > 1 || (p->used && (p->tone > 3 || p->room > 3 || p->curve > 3 || p->una > 100 || p->size > 100 ||
                                         p->amount > 100 || p->width > 100 || p->brill > 100 || p->reso > 100 ||
-                                        p->reso_on > 1 || p->rel1 > 101)))
+                                        p->reso_on > 1 || p->rel1 > 101 || p->layer > 100 || p->lay_att > 100 ||
+                                        p->lay_rel > 100 || p->lay_tone > 100)))
             return 0;
     }
     return 1;
@@ -138,9 +164,17 @@ static void touch_build(void)
 static int q15_of(int pct) { return pct * 32767 / 100; }
 #define REL_FULL 9000                    /* the release noise at 100: 1.1's level (Q15) */
 
+/* the pad layer's knobs (0..100) as the engine takes them: the level squared (50 is -12 dB of 100), the attack
+ * 0.02 .. 2 s, the release 0.1 .. 4 s, the tone 300 Hz .. 8 kHz, each on a log scale */
+static int lay_att_ms(int v) { return (int)(20.0f * fpow(100.0f, v / 100.0f) + 0.5f); }
+static int lay_rel_ms(int v) { return (int)(100.0f * fpow(40.0f, v / 100.0f) + 0.5f); }
+static int lay_tone_hz(int v) { return (int)(300.0f * fpow(27.0f, v / 100.0f) + 0.5f); }
+
 static void apply_settings(void)
 {
     touch_build();
+    erk_set_pad(set.layer * set.layer * 32767 / 10000, lay_att_ms(set.lay_att), lay_rel_ms(set.lay_rel),
+                lay_tone_hz(set.lay_tone));
     erk_set_tone(set.tone, q15_of(set.brill), q15_of(set.una));
     erk_set_room(set.room, q15_of(set.size), set.amount * 20000 / 100);
     erk_set_width(q15_of(set.width));
@@ -421,20 +455,42 @@ void app_overload(void) { erk_shed(); }
 static const erk_cfg ENGINE = {ERK_REV_HALL, 7600, 1300, 16000, 9000, ERK_SAMPLED, 0};
 static erk_bank bank;
 
-void app_init(void)
+/* the user presets: 1.3's, or 1.0 .. 1.2's (12 bytes a preset) moved over, the pad layer off in them */
+static void slots_load(void)
 {
-    settings_load();
-    if (plat_store_load(OBJ_PRESETS, &slots, sizeof slots) != (int)sizeof slots || !slots_ok()) {
+    static uint8_t raw[sizeof slots];
+    int n = plat_store_load(OBJ_PRESETS, raw, sizeof raw), i;
+    uint32_t magic;
+    memset(&slots, 0, sizeof slots);
+    memcpy(&magic, raw, 4);
+    if (n == (int)sizeof slots && magic == SLOT_MAGIC) {
+        memcpy(&slots, raw, sizeof slots);
+    } else if (n == 4 + NSLOT * SLOT_SIZE1 && magic == SLOT_MAGIC1) {
+        slots.magic = SLOT_MAGIC;
+        for (i = 0; i < NSLOT; i++) {
+            memcpy(&slots.s[i], raw + 4 + i * SLOT_SIZE1, SLOT_SIZE1);
+            slots.s[i].lay_att = LAY_ATT_DEF;
+            slots.s[i].lay_rel = LAY_REL_DEF;
+            slots.s[i].lay_tone = LAY_TONE_DEF;
+        }
+    }
+    if (!slots_ok()) {
         memset(&slots, 0, sizeof slots);
         slots.magic = SLOT_MAGIC;
     }
+}
+
+void app_init(void)
+{
+    settings_load();
+    slots_load();
     erk_bank_open(&bank, ERK_BANK);
     erk_init(&bank, &ENGINE);
     apply_settings();
 }
 
 /* ---------------------------------------------------------------- the UI */
-enum { PG_PLAY, PG_TONE, PG_ROOM, PG_SETUP, PG_ABOUT, NPAGES };
+enum { PG_PLAY, PG_TONE, PG_ROOM, PG_LAYER, PG_SETUP, PG_ABOUT, NPAGES };
 enum { ST_BOOT, ST_RUN };
 enum { PD_SOFT, PD_SOST, PD_SUS, NPD };      /* the pedal buttons: SCALE, CHORD, SEQ REC (FM-1: SEL, ENV, REC) */
 static const uint8_t PD_BTN[NPD] = {B_SEL, B_ENV, B_REC};
@@ -556,6 +612,10 @@ static void slot_recall(int i)
     set.reso_on = p->reso_on;
     if (p->rel1)
         set.relnoise = (uint8_t)(p->rel1 - 1);
+    set.layer = p->layer;
+    set.lay_att = p->lay_att;
+    set.lay_rel = p->lay_rel;
+    set.lay_tone = p->lay_tone;
     set.pad = (uint8_t)(SLOT_PAD0 + i + 1);
     sound_changed();
     app_say(t, TONE_NAME[set.tone]);
@@ -577,6 +637,10 @@ static void slot_save(int i)
     p->reso = set.reso;
     p->reso_on = set.reso_on;
     p->rel1 = (uint8_t)(set.relnoise + 1);
+    p->layer = set.layer;
+    p->lay_att = set.lay_att;
+    p->lay_rel = set.lay_rel;
+    p->lay_tone = set.lay_tone;
     slot_name(t, i);
     if (plat_store_save(OBJ_PRESETS, &slots, sizeof slots) == 0) {
         set.pad = (uint8_t)(SLOT_PAD0 + i + 1);
@@ -631,6 +695,22 @@ static void knobs_of(int page, knob_t *k)
         else
             cat_s(k[3].value, "off");
         k[3].amt = set.relnoise / 100.0f;
+    } else if (page == PG_LAYER) {                /* the pad layer under the piano */
+        k[0].label = "pad";
+        if (set.layer)
+            pct_text(k[0].value, set.layer);
+        else
+            cat_s(k[0].value, "off");
+        k[0].amt = set.layer / 100.0f;
+        k[1].label = "attack";
+        secs_text(k[1].value, lay_att_ms(set.lay_att));
+        k[1].amt = set.lay_att / 100.0f;
+        k[2].label = "release";
+        secs_text(k[2].value, lay_rel_ms(set.lay_rel));
+        k[2].amt = set.lay_rel / 100.0f;
+        k[3].label = "tone";
+        hz_text(k[3].value, lay_tone_hz(set.lay_tone));
+        k[3].amt = set.lay_tone / 100.0f;
     } else if (page == PG_SETUP) {                /* the pedals and the pads */
         k[0].label = "una corda";
         pct_text(k[0].value, set.una);
@@ -732,6 +812,10 @@ static void knob_turn(int page, int i, int d)
 #endif
             return;
         }
+    } else if (page == PG_LAYER) {
+        static uint8_t *const P[4] = {&set.layer, &set.lay_att, &set.lay_rel, &set.lay_tone};
+        v = P[i];
+        step = 5;
     } else if (page == PG_TONE) {
         static uint8_t *const P[4] = {&set.curve, &set.brill, &set.reso, &set.relnoise};
         v = P[i];
@@ -959,6 +1043,54 @@ static void settings_save(void)
     }
 }
 
+#if BOARD_SMK37
+/* K6..K8 and the four faders have no job in Erik37's sound: they send MIDI CC on channel 1 (erik37#4), for a DAW or a
+ * synth behind it. The knobs: CC 16, 17, 18 (general purpose 1-3), a value 0..127 that starts at 64, 2 a detent. The
+ * faders: CC 80, 81, 82, 83 (general purpose 5-8), their position; a change of one step goes out once it has held
+ * for 40 ms (a fader resting between two steps does not stream), two steps or an end at once. Nothing at boot */
+static const uint8_t CC_KNOB[3] = {16, 17, 18}, CC_FADER[4] = {80, 81, 82, 83};
+static struct {
+    int knob[3], fad[4], cand[4];
+    uint32_t cand_at[4];
+} cc = {{64, 64, 64}, {-1, -1, -1, -1}, {-1, -1, -1, -1}, {0, 0, 0, 0}};
+
+static void cc_controls(uint32_t now)
+{
+    static const uint8_t ENC[3] = {EN_SELECT, EN_ALGO, EN_PRESET};
+    int i;
+    for (i = 0; i < 3; i++) {
+        int32_t e = plat_enc(ENC[i]);
+        int v = clamp(cc.knob[i] + (int)e * 2, 0, 127);
+        if (e && v != cc.knob[i]) {
+            cc.knob[i] = v;
+            midi_out(0xB0u, CC_KNOB[i], (uint32_t)v);
+        }
+    }
+    for (i = 0; i < 4; i++) {
+        int v = plat_fader(i), d;
+        if (v < 0)
+            continue;
+        if (cc.fad[i] < 0) {                  /* the first reading: where it rests (not sent) */
+            cc.fad[i] = cc.cand[i] = v;
+            continue;
+        }
+        if (v == cc.fad[i]) {
+            cc.cand[i] = v;
+            continue;
+        }
+        if (v != cc.cand[i]) {
+            cc.cand[i] = v;
+            cc.cand_at[i] = now;
+        }
+        d = v - cc.fad[i];
+        if (d >= 2 || d <= -2 || v == 0 || v == 127 || now - cc.cand_at[i] >= 40u) {
+            cc.fad[i] = v;
+            midi_out(0xB0u, CC_FADER[i], (uint32_t)v);
+        }
+    }
+}
+#endif
+
 static void input(void)
 {
     uint32_t btn = plat_buttons(), down = btn & ~ui.btn, up = ui.btn & ~btn, now = plat_ms();
@@ -1040,10 +1172,7 @@ static void input(void)
         if ((e = plat_enc(EN_K1 + i)) != 0)
             knob_turn(ui.page, i, e);
 #if BOARD_SMK37
-    /* K6..K8 (SELECT, ALGORITHM, PRESETS) have no job here: read and dropped */
-    plat_enc(EN_SELECT);
-    plat_enc(EN_ALGO);
-    plat_enc(EN_PRESET);
+    cc_controls(now);                         /* K6..K8 and the faders: MIDI CC out */
 #else
     if ((e = plat_enc(EN_SELECT)) != 0)       /* the FM-1: SELECT the page */
         page_set(ui.page + e);
@@ -1063,7 +1192,7 @@ static void input(void)
     }
     /* saved by itself once the piano is quiet, the room's tail too (a flash write stops the sound and USB for a
      * moment): no note for 1.5 s */
-    if (erk_active())
+    if (erk_active() || erk_pad_active())
         ui.quiet_at = now;
     if (set_dirty && now - set_changed_at > 2000u && now - ui.quiet_at > 1500u) {
         if (plat_store_save(OBJ_SETTINGS, &set, sizeof set) == 0)
@@ -1095,7 +1224,7 @@ static void draw_header(void)
     } else if (ui.page == PG_PLAY) {
         header_text(TONE_NAME[set.tone], ui.pd_latch[PD_SUS] ? "SUSTAIN ON" : ROOM_NAME[set.room]);
     } else {
-        static const char *const TITLE[NPAGES] = {"", "TONE & TOUCH", "ROOM", SETUP_TITLE, "ABOUT"};
+        static const char *const TITLE[NPAGES] = {"", "TONE & TOUCH", "ROOM", "PAD LAYER", SETUP_TITLE, "ABOUT"};
         header_text(TITLE[ui.page], 0);
         page_dots(NPAGES - 1, ui.page - 1);
     }
@@ -1186,6 +1315,8 @@ static void draw_page(void)
             tone_page(set.curve, au.last_vel ? (int)au.last_vel : 88);
         else if (ui.page == PG_ROOM)
             room_page(set.room, set.size / 100.0f, set.amount / 100.0f, set.width / 100.0f);
+        else if (ui.page == PG_LAYER)
+            layer_page();
         else if (ui.page == PG_SETUP)
             setup_page();
         else if (ui.page == PG_ABOUT)
@@ -1337,6 +1468,12 @@ int app_expect(const char *what, int *got)
         *got = set_dirty;
     else if (!strcmp(what, "relnoise"))
         *got = set.relnoise;
+    else if (!strcmp(what, "layer"))
+        *got = set.layer;
+    else if (!strcmp(what, "lay_att"))
+        *got = set.lay_att;
+    else if (!strcmp(what, "pad_voices"))
+        *got = erk_pad_active();
     else if (!strcmp(what, "padlight"))
         *got = set.padlight;
     else if (!strcmp(what, "wheel_sus"))

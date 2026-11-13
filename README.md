@@ -6,10 +6,11 @@ A grand piano for the M-Vave SMK-37 (and the FM-1): a sampled concert grand with
 their noise, the three pedals, sympathetic string resonance and four rooms. It is its own firmware, built on
 [fm1-base](https://github.com/charlesvestal/fm1-base) and [felucca-bsp](https://github.com/hugelton/felucca-bsp).
 
-**Status: 1.2, experimental.** Played on an SMK-37 Pro. 1.2: the release noise has its own level, SEQ REC is a
-sustain toggle with its light, only the pedal holds notes by default (the PEDAL jack is read more carefully), a pad
-light setting, and a cleaner output. The FM-1 build is untested on a unit: feedback welcome. All controls:
-[CONTROLS.md](CONTROLS.md). Video (1.1): https://youtu.be/5yUCB1-OJNE
+**Status: 1.3, experimental.** 1.3: a steady tone (the sample loops no longer pulse: no more "wah" a few times a
+second, erik37#5 and #6), a pad layer under the piano (off by default, the new PAD LAYER page), MIDI CC from K6..K8
+and the faders (erik37#4), and the FM-1 build also runs on the newer FM-1s with the UC25HQ80 flash (erik37#11). The
+FM-1 build is untested on a unit: feedback welcome. All controls: [CONTROLS.md](CONTROLS.md). Video (1.1):
+https://youtu.be/5yUCB1-OJNE
 
 Install it with the installer at <https://genkigenki.github.io/smk37/> (Chrome or Edge), the keyboard on USB.
 There is one package per model: SMK-37 Pro (and the Starrykey 37 Play), SMK-37 Elite, MKE-P37 and the FM-1
@@ -24,8 +25,8 @@ There is one package per model: SMK-37 Pro (and the Starrykey 37 Play), SMK-37 E
 | Keys | the piano, with velocity through the touch curve (TONE & TOUCH); C3..C6, OCTAVE- / OCTAVE+ move them by octaves |
 | K1..K4 | the four knobs at the bottom of the screen (below) |
 | K5 MASTER | the volume |
-| K6..K8 | nothing |
-| < / > | the pages: play, TONE & TOUCH, ROOM, PEDALS & PADS, ABOUT |
+| K6..K8 | MIDI CC 16, 17, 18 out (channel 1; 0..127 from 64, 2 a detent): no sound setting |
+| < / > | the pages: play, TONE & TOUCH, ROOM, PAD LAYER, PEDALS & PADS, ABOUT |
 | PATCH | back to the play screen; held, the audio load and the voices in the header |
 | Pads 1-4 | the voices: CONCERT (hall), STUDIO (chamber, brighter), VINTAGE (darker), JAZZ (a small room) |
 | Pads 5-16 | the user presets USER 1-12: a tap recalls one; held a second, the sound is saved there ("SAVED USER n") |
@@ -38,8 +39,8 @@ There is one package per model: SMK-37 Pro (and the Starrykey 37 Play), SMK-37 E
 | SEQ PLAY | the metronome (its tempo: K4 on the play screen) |
 | BT | save the settings now (they also save themselves once the piano is quiet) |
 | FX | every note let go |
-| Faders | nothing (every setting is on a knob) |
-| USB-MIDI | the keys, pedals and pitch wheel go out (notes, CC 64 / 66 / 67, pitch bend); notes, those pedals and pitch bend come in and play the piano (a note the keys hold is not struck again when the computer echoes it back) |
+| Faders | MIDI CC 80, 81, 82, 83 out (channel 1), their position: no sound setting (every one is on a knob) |
+| USB-MIDI | the keys, pedals and pitch wheel go out (notes, CC 64 / 66 / 67, pitch bend), and K6..K8 and the faders (CC 16-18, 80-83); notes, those pedals and pitch bend come in and play the piano (a note the keys hold is not struck again when the computer echoes it back) |
 | OCTAVE- + OCTAVE+ held 5 s | update mode |
 
 SCALE and CHORD: held, the pedal is down while held; a tap latches it (its light on) until the next tap. The
@@ -50,18 +51,22 @@ sustain is the strongest of the PEDAL jack, SEQ REC, MIDI and (when set) the mod
 | play | tone | room | reverb | tempo |
 | TONE & TOUCH | touch curve | brilliance | resonance (down past 0: off) | release noise (0 off .. 100, 40 at first) |
 | ROOM | room | size | amount | width |
+| PAD LAYER | pad level (0 off .. 100, off at first) | attack (0.02 .. 2 s) | release (0.1 .. 4 s) | tone (300 Hz .. 8 kHz) |
 | PEDALS & PADS | una corda depth | mod wheel (off, sustain) | pedal jack (auto, open, closed) | pad light (45, 60, 80, 100 %) |
 | ABOUT | audio load | voices | most voices | xruns |
 
-The play screen is a view into the piano: the strings light up as they sound, the dampers lift. A user preset
-keeps the tone, room, size, amount, width, brilliance, resonance, release noise, touch curve and una corda depth;
+The play screen is a view into the piano: the strings light up as they sound, the dampers lift. The pad layer is a
+soft string pad under each note (two oscillators a few cents apart, one left and one right, up to 8 notes), held by
+the keys and the pedals like the piano and sent into the same room. A user preset keeps the tone, room, size, amount,
+width, brilliance, resonance, release noise, touch curve, una corda depth and the pad layer (a preset saved by 1.2 or
+earlier recalls with the pad layer off);
 the presets survive power-off (in the firmware's own store). The pad lights: a voice dim amber, the one chosen bright
 gold; a preset pale warm grey when empty, brighter when filled, warm ivory when chosen. The pad light dims the chosen
 pad to 45 % at the least; the dim levels keep a floor, so each stays visible and apart from the next.
 
 ### On the FM-1
 
-`erik37-fm1.fwsc` (identity FM-1_480102) is the same piano for the FM-1's 27 keys (F3..G5, velocity from the keys).
+`erik37-fm1.fwsc` (identity FM-1_480103) is the same piano for the FM-1's 27 keys (F3..G5, velocity from the keys).
 **Untested on a unit.** It does not run in [fm1-emulator](https://github.com/simonjohansson/fm1-emulator) yet: the
 velocity reads the keys through the chip's converter (rows PA7, PA8 and PA10), and the emulator models only the
 converter settings and inputs of the stock firmware (MASTER and PB1), so it stops as soon as the key scan starts
@@ -69,7 +74,7 @@ converter settings and inputs of the stock firmware (MASTER and PB1), so it stop
 
 | FM-1 | What it does |
 | --- | --- |
-| KNOB 1..4 | the page's four knobs (as K1..K4 above; PEDALS has only una corda) |
+| KNOB 1..4 | the page's four knobs (as K1..K4 above, PAD LAYER too; PEDALS has only una corda) |
 | SELECT | the pages |
 | ALGORITHM | the voices CONCERT, STUDIO, VINTAGE, JAZZ |
 | PRESETS | the user presets USER 1-12, recalled as it lands on them |
@@ -80,7 +85,10 @@ converter settings and inputs of the stock firmware (MASTER and PB1), so it stop
 ## The sound
 
 - The Salamander Grand Piano V3 (a Yamaha C5): 18 notes across the keyboard in 3 velocity layers, crossfaded in the
-  attack, about 380 KB of block-ADPCM samples (4.25 bits a sample, 22.05 to 32 kHz), looped after the attack.
+  attack, about 380 KB of block-ADPCM samples (4.25 bits a sample, 22.05 to 32 kHz), looped after the attack. The
+  loops are steady (1.3): a loop of 0.13 to 0.5 s used to repeat the strings' beating, and its crossfade let some
+  partials cancel once a loop, a "wah" 2 to 7 times a second. The bank tool now evens out each frequency's level over
+  the loop and crossfades frequency by frequency (`tools/build_bank.py --steady`).
 - Each key's decay is measured from the recording (a fast first decay, then the aftersound), faster in the treble.
   The top keys have no dampers, as on a grand.
 - The brightness follows the velocity and darkens as a note rings. Releasing a key brings the damper down, with its
@@ -107,7 +115,7 @@ app/build/smk37/host/erik37-smk37_host app/tests/screens.txt /tmp/shots   # the 
 app/build/host/erik37_host app/tests/screens-fm1.txt /tmp/shots-fm1       # the FM-1's
 ```
 
-`base/` is [fm1-base](https://github.com/charlesvestal/fm1-base) (Charles Vestal, MPL-2.0) with [felucca-bsp](https://github.com/hugelton/felucca-bsp) in `base/bsp` (Leo Kuroshita, MPL-2.0), included here with their SMK-37 board support and two additions for the SMK-37: the keybed's velocity and the PEDAL jack
+`base/` is fm1-base (branch smk37) with two additions for the SMK-37: the keybed's velocity and the PEDAL jack
 (`plat_keybed_vel`, `plat_pedal_raw`).
 
 ## Licence

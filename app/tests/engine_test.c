@@ -212,6 +212,7 @@ int main(int argc, char **argv)
     render(buf, S(0.5));
     b = rms_db(buf, S(0.02), S(0.4));
     check(b < a - 1.0, "una corda is softer");
+    printf("  una corda: brightness %.4f, without %.4f\n", bright(buf, S(0.02), S(0.4)), c);
     check(bright(buf, S(0.02), S(0.4)) < c * 0.9, "una corda is darker");
 
     /* the rooms: a staccato chord, then what is left after 0.6 s */

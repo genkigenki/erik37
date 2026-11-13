@@ -5,12 +5,15 @@
  * (velocity, tone, una corda, darkening with time); a block-rate envelope (the key's two-slope decay, the
  * two-stage damper release, half pedal); constant-power pan by key and width. The bus: a tone EQ (two one-pole
  * shelves), sympathetic resonance (12 string-tuned combs, pedal down) and an 8-line FDN reverb (chamber, hall,
- * church), both at half rate (22.05 kHz), the metronome's tick. Release noise: one-shot voices from the bank.
+ * church), both at half rate (22.05 kHz), the metronome's tick. Release noise: one-shot voices from the bank. The
+ * pad layer (off unless its level is up): two slightly detuned wave oscillators a note, a block-rate envelope, a low
+ * pass on its bus, into the room.
  * The per-sample loops are 32-bit only; 64-bit products live in noinline helpers (felucca-bsp docs/CPU.md: a
  * 32x32->64 multiply beside a load can leave a register off on the AC79). */
 #include <string.h>
 #include "erk.h"
 #include "erk_codec.h"
+#include "erk_pad.h"
 
 #define REL1 83                 /* damper first stage, blocks (~60 ms; tools/build_bank.py REL1_BLOCKS) */
 #define DARK_FROM 345           /* filter darkening starts after ~0.25 s (the attack is in the data) */
@@ -367,6 +370,10 @@ static void release(voice *v)
 }
 
 static int key_sost(int k) { return (int)(erk_sost_keys[k >> 5] >> (k & 31) & 1u); }
+static void pad_on(int key, int vel);
+static void pad_off(int key, int hold);
+static void pad_let_go(int all);
+static void pad_reset(void);
 
 void erk_note_on(int key, int vel)
 {
@@ -381,6 +388,7 @@ void erk_note_on(int key, int vel)
         return;
     if (vel > 127)
         vel = 127;
+    pad_on(key, vel);
     if (soft)                                         /* una corda: the hammer meets fewer strings */
         vel = 1 + (vel * (32767 - ((st.una * 6553) >> 15))) / 32768;
     k = &bk->key[key];
@@ -497,6 +505,8 @@ void erk_note_off(int key)
 {
     int i;
     key -= ERK_KEY0;
+    if (key >= 0 && key < ERK_KEYS)
+        pad_off(key, sus || key_sost(key));
     for (i = 0; i < ERK_VOICES + ERK_DYING; i++) {
         voice *v = &vc[i];
         if (v->key == key && v->state == V_ON) {
@@ -520,10 +530,12 @@ void erk_sustain(int val)
         m_half = mulq30(1u << 30, 1u << 30) - (uint32_t)muls((int32_t)((1u << 30) - (bk ? bk->key[40].mr2 : (1u << 30))),
                                                              32767 - f, 15) / 3u;
     }
-    if (sus && !on)
+    if (sus && !on) {
         for (i = 0; i < ERK_VOICES + ERK_DYING; i++)
             if (vc[i].state == V_SUST && !(vc[i].flags & F_SOST))
                 release(&vc[i]);
+        pad_let_go(0);
+    }
     sus = on;
     erk_sus_q15 = sus_lvl;
 }
@@ -550,6 +562,8 @@ void erk_sostenuto(int on)
                 if (vc[i].state == V_SUST && !sus)
                     release(&vc[i]);
             }
+        if (!sus)
+            pad_let_go(0);
     }
     sost = on;
 }
@@ -567,8 +581,10 @@ void erk_all_off(void)
     for (i = 0; i < ERK_VOICES + ERK_DYING; i++)
         if (vc[i].state == V_ON || vc[i].state == V_SUST)
             release(&vc[i]);
+    pad_let_go(1);
 }
 
+static void pad_panic(void);
 void erk_panic(void)
 {
     int i;
@@ -577,6 +593,7 @@ void erk_panic(void)
             vc[i].state = V_FADE;
             vc[i].m = FADE_M;
         }
+    pad_panic();
 }
 
 void erk_shed(void)
@@ -815,6 +832,7 @@ void erk_init(const erk_bank *b, const erk_cfg *c)
     bk = b;
     cfg = *c;
     memset(vc, 0, sizeof vc);
+    pad_reset();
     memset(res_buf, 0, sizeof res_buf);
     bend_q16 = 65536;
     for (i = 0; i < NRES; i++) {
@@ -960,6 +978,191 @@ static __attribute__((noinline)) void click_block(int32_t *L, int32_t *R)
     }
 }
 
+/* ---------------------------------------------------------------- the pad layer (erik37#6) */
+
+enum { P_FREE, P_ON, P_SUST, P_REL };
+typedef struct {
+    const int16_t *w;           /* the wave (by the note's pitch: no harmonic past ~11 kHz) */
+    uint32_t ph0, ph1, inc0, inc1;   /* the two oscillators (a few cents apart: one left, one right) */
+    uint32_t env;               /* Q30 */
+    int32_t g;                  /* the gain as last applied, Q30 */
+    int32_t amp;                /* Q15, by velocity */
+    uint8_t key, state, fast;
+} padv;
+static padv pv[ERK_PADV];
+static struct {
+    volatile int32_t level;     /* Q15: 0 off */
+    volatile uint32_t att, rel; /* Q30: the attack's step a block, the release's factor a block */
+    volatile int32_t lp;        /* the bus's low pass, Q15 */
+} pad = {0, 1u << 26, 1063000000u, 4000};
+static int32_t pad_yl, pad_yr;
+
+void erk_set_pad(int level_q15, int attack_ms, int release_ms, int tone_hz)
+{
+    float a = (float)clampi(attack_ms, 5, 5000), r = (float)clampi(release_ms, 20, 10000);
+    float fc = (float)clampi(tone_hz, 100, 12000);
+    pad.att = (uint32_t)(1073741824.0f * (float)ERK_BLOCK * 1000.0f / (a * (float)ERK_FS));
+    pad.rel = (uint32_t)(1073741824.0f * exp2_f(-3.0f * 3.3219281f * (float)ERK_BLOCK * 1000.0f / (r * (float)ERK_FS)));
+    pad.lp = (int32_t)(32767.0f * (1.0f - exp2_f(-6.2831853f * 1.4426950f * fc / (float)ERK_FS)));
+    pad.level = clampi(level_q15, 0, 32767);
+}
+
+static void pad_reset(void)
+{
+    memset(pv, 0, sizeof pv);
+    pad_yl = pad_yr = 0;
+}
+
+int erk_pad_active(void)
+{
+    int i, n = 0;
+    for (i = 0; i < ERK_PADV; i++)
+        n += pv[i].state != P_FREE;
+    return n;
+}
+
+static void pad_on(int key, int vel)                  /* key 0..87 */
+{
+    padv *p = 0;
+    int i;
+    float f0;
+    if (!pad.level)
+        return;
+    for (i = 0; i < ERK_PADV && !p; i++)              /* the same key again: it goes on (no restart) */
+        if (pv[i].state != P_FREE && pv[i].key == key)
+            p = &pv[i];
+    for (i = 0; i < ERK_PADV && !p; i++)
+        if (pv[i].state == P_FREE) {
+            p = &pv[i];
+            memset(p, 0, sizeof *p);
+            p->ph1 = 0x80000000u;                     /* the two start apart */
+        }
+    if (!p) {                                         /* all busy: the faintest, let-go ones first */
+        for (i = 0; i < ERK_PADV; i++) {
+            uint32_t e = pv[i].env >> (pv[i].state == P_REL ? 2 : 0);
+            if (!p || e < (p->env >> (p->state == P_REL ? 2 : 0)))
+                p = &pv[i];
+        }
+    }
+    f0 = 440.0f * exp2_f((float)(key + ERK_KEY0 - 69) / 12.0f);
+    p->w = f0 < 700.0f ? erk_pad_w16 : f0 < 1400.0f ? erk_pad_w8 : erk_pad_w4;
+    p->inc0 = (uint32_t)(f0 * (4294967296.0f / (float)ERK_FS) * 0.99769f);   /* -4 cents */
+    p->inc1 = (uint32_t)(f0 * (4294967296.0f / (float)ERK_FS) * 1.00231f);   /* +4 cents */
+    p->amp = 16384 + vel * 129;                       /* a soft pad: velocity counts a little (0.5 .. 1) */
+    p->key = (uint8_t)key;
+    p->fast = 0;
+    p->state = P_ON;
+}
+
+static void pad_off(int key, int hold)
+{
+    int i;
+    for (i = 0; i < ERK_PADV; i++)
+        if (pv[i].state == P_ON && pv[i].key == key)
+            pv[i].state = (uint8_t)(hold ? P_SUST : P_REL);
+}
+
+static void pad_let_go(int all)                       /* the pedal up (all: every note) */
+{
+    int i;
+    for (i = 0; i < ERK_PADV; i++)
+        if ((pv[i].state == P_SUST && (all || !key_sost(pv[i].key))) || (all && pv[i].state == P_ON))
+            pv[i].state = P_REL;
+}
+
+static void pad_panic(void)
+{
+    int i;
+    for (i = 0; i < ERK_PADV; i++)
+        if (pv[i].state != P_FREE) {
+            pv[i].state = P_REL;
+            pv[i].fast = 1;
+        }
+}
+
+/* one pad note's block into the pad bus: two oscillators (linear interpolation in the 256-point wave), the gain
+ * ramped to the block's target */
+static __attribute__((noinline)) void pad_run(padv *p, int32_t *L, int32_t *R, int32_t dg, uint32_t i0, uint32_t i1)
+{
+    const int16_t *w = p->w;
+    uint32_t a = p->ph0, b = p->ph1;
+    int32_t g = p->g;
+    int i;
+    for (i = 0; i < ERK_BLOCK; i++) {
+        int32_t ia = (int32_t)(a >> 24), ib = (int32_t)(b >> 24);
+        int32_t xa = w[ia] + (((w[ia + 1] - w[ia]) * (int32_t)((a >> 9) & 32767u)) >> 15);
+        int32_t xb = w[ib] + (((w[ib + 1] - w[ib]) * (int32_t)((b >> 9) & 32767u)) >> 15);
+        a += i0;
+        b += i1;
+        g += dg;
+        L[i] += (xa * (g >> 15)) >> MIXSH;
+        R[i] += (xb * (g >> 15)) >> MIXSH;
+    }
+    p->ph0 = a;
+    p->ph1 = b;
+    p->g = g;
+}
+
+/* the pad bus's low pass (the tone), added to the mix: (x - y) >> 5 keeps the product within 32 bits */
+static __attribute__((noinline)) void pad_mix(const int32_t *pl, const int32_t *pr, int32_t *L, int32_t *R, int32_t a)
+{
+    int i;
+    int32_t yl = pad_yl, yr = pad_yr;
+    for (i = 0; i < ERK_BLOCK; i++) {
+        yl += (((pl[i] - yl) >> 5) * a) >> 10;
+        yr += (((pr[i] - yr) >> 5) * a) >> 10;
+        L[i] += yl;
+        R[i] += yr;
+    }
+    pad_yl = yl;
+    pad_yr = yr;
+}
+
+/* the pad notes, a block: the envelope (up to full at the attack's rate, held while the key or the pedal holds, then
+ * the release), the pitch wheel, into the bus. At level 1.0 a pad note is a quarter of a full piano note */
+static void pad_block(int32_t *L, int32_t *R)
+{
+    int32_t pl[ERK_BLOCK], pr[ERK_BLOCK];
+    int i, any = 0;
+    for (i = 0; i < ERK_PADV; i++) {
+        padv *p = &pv[i];
+        uint32_t i0 = p->inc0, i1 = p->inc1;
+        int32_t tg;
+        if (p->state == P_FREE)
+            continue;
+        if (p->state == P_REL) {
+            p->env = mulq30(p->env, p->fast ? FADE_M : pad.rel);
+        } else {
+            p->env += pad.att;
+            if (p->env > (1u << 30))
+                p->env = 1u << 30;
+        }
+        tg = (int32_t)(((((((p->env >> 15) * (uint32_t)p->amp) >> 15) * (uint32_t)pad.level) >> 15) * 8192u) >> 15);
+        if (!any) {
+            memset(pl, 0, sizeof pl);
+            memset(pr, 0, sizeof pr);
+            any = 1;
+        }
+        if (bend_q16 != 65536) {
+            i0 = mulq30(i0, (uint32_t)bend_q16 << 14);
+            i1 = mulq30(i1, (uint32_t)bend_q16 << 14);
+        }
+        pad_run(p, pl, pr, ((tg << 15) - p->g) / ERK_BLOCK, i0, i1);
+        erk_st.pad_blocks++;
+        if (p->state == P_REL && p->env < (1u << 16))
+            p->state = P_FREE;
+    }
+    if (!any && pad_yl > -64 && pad_yl < 64 && pad_yr > -64 && pad_yr < 64)
+        pad_yl = pad_yr = 0;                          /* (the tail's last steps: done) */
+    if (any || pad_yl || pad_yr) {
+        if (!any) {
+            memset(pl, 0, sizeof pl);
+            memset(pr, 0, sizeof pr);
+        }
+        pad_mix(pl, pr, L, R, pad.lp);
+    }
+}
+
 /* the tone EQ, on the piano before the room: a low shelf (one-pole at 250 Hz) and a high shelf (at 3 kHz) */
 static int32_t eq_l[4], eq_r[4];
 
@@ -1024,6 +1227,7 @@ void erk_render_gain(int32_t *lr, int frames, int32_t master_q12)
                 R[i] += (rr[i] * rlev) >> 10;
             }
         }
+        pad_block(L, R);                              /* (nothing while no pad note sounds) */
         if (clk_n > 0)
             click_block(L, R);
         rev_mix += (st.rev_mix - rev_mix) >> 4;
