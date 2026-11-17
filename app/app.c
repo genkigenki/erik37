@@ -559,6 +559,10 @@ void app_say(const char *a, const char *b)
 
 #include "ui.c"
 #include "boot.c"
+#ifdef ERIK_BIG_SCREEN
+#include "big_screen.c"                    /* the FM-1 Big Screen mirror over USB */
+int app_sysex(const uint8_t *p, uint32_t n) { return bs_usb_sysex(p, n); }
+#endif
 
 /* ---------------------------------------------------------------- the voices and the presets, chosen */
 static void sound_changed(void)              /* tone, room ... all at once: every page and the header again */
@@ -1395,6 +1399,9 @@ void app_ui_init(void)
 void app_frame(void)
 {
     input();
+#ifdef ERIK_BIG_SCREEN
+    bs_service();
+#endif
     if (ui.state == ST_BOOT) {
         uint32_t t = plat_ms() - ui.boot_t0;
         int f = (int)(t / BOOT_MS);

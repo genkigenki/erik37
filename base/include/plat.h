@@ -138,6 +138,7 @@ void plat_log(const char *line);
 const uint8_t *plat_data(uint32_t off);   /* read in place; 0 = outside the area */
 int plat_data_erase(uint32_t off);        /* the 4 KiB sector at off (aligned); 0 = done */
 int plat_data_write(uint32_t off, const void *src, uint32_t n);   /* into erased flash, src in RAM; 0 = done */       /* a line for the radio's log (fm1_remote.py log; it survives a restart) */
+int plat_sysex_try(const uint8_t *frame, uint32_t n);   /* the same, never waiting: 0 sent, -2 no room now, -1 no computer */
 void plat_sysex_send(const uint8_t *frame, uint32_t n);   /* a whole SysEx frame (F0 .. F7) out over USB */                 /* long work in the main loop (drawing) lets the app's background run (app_yield) */
 
 /* the keys' velocity and pressure (an app with APP_KEY_SENSE): on, the scan reads the keys on the analog rows and

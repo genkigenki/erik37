@@ -192,6 +192,15 @@ static int ann_wire_send(const uint8_t *p, uint32_t n)   /* never waits: no room
         return -1;
     return ota_wire_send(p, n);
 }
+/* plat.h: a SysEx frame out over USB that never waits: 0 sent, -2 no room now (again later), -1 no computer */
+int plat_sysex_try(const uint8_t *p, uint32_t n)
+{
+    if (!usb.config || usb.suspended)
+        return -1;
+    if (SXQ - (so_w - so_r) < (n + 2u) / 3u)
+        return -2;
+    return ota_wire_send(p, n) ? -1 : 0;
+}
 #include "panel.c"
 #if FM1B_BLE || FM1B_WIFI
 #include "radio.c"                /* the shim's platform, a radio's start; Bluetooth MIDI (FM1B_BLE, ble/: the shim, the
