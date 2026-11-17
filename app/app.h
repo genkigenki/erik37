@@ -38,6 +38,14 @@ void app_frame(void);
 void app_input_only(void);
 void app_say(const char *a, const char *b);
 
+#ifndef PLAT_HOST
+/* Big Screen: the screen over USB to FM-1 Mirror / FM-1 Mirror + Spyglass (big_screen.c) */
+#define ERIK_BIG_SCREEN 1
+#define APP_SYSEX                        /* the Big Screen apps' hello over USB-MIDI (F0 7D 'F' 'S' xx F7) */
+int app_sysex(const uint8_t *p, uint32_t n);
+void bs_lcd(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *px, uint16_t c);
+#endif
+
 #ifdef PLAT_HOST
 #define APP_HOST_EXPECT                  /* the host simulator's checks (tests/ *.txt): page, tone, room, voices ... */
 int app_expect(const char *what, int *got);
